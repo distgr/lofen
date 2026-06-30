@@ -1,9 +1,3 @@
-/* --------------------------
-Local file scanner
-    - Scans configured music_paths for audio files
-    - Reads metadata tags with lofty
-    - Inserts/updates artists, albums, tracks in the SQLite database
--------------------------- */
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::tag::Accessor;
 use sqlx::{Pool, Sqlite};
@@ -41,15 +35,177 @@ pub struct ScanStats {
     pub errors: usize,
 }
 
+struct TrackInfo {
+    path: String,
+    track_id: String,
+    album_key: String,
+    album_artist: String,
+    album_name: String,
+    artist_id: String,
+    title: String,
+    artist_name: String,
+    track_num: u64,
+    year: u64,
+    genres: Vec<String>,
+    run_time_ticks: u64,
+}
+
 pub async fn scan_paths(
     pool: &Arc<Pool<Sqlite>>,
     paths: &[String],
 ) -> Result<ScanStats, Box<dyn std::error::Error + Send + Sync>> {
-    let mut stats = ScanStats { scanned: 0, inserted: 0, errors: 0 };
+    let paths_owned: Vec<String> = paths.to_vec();
 
-    // Collect all audio files first
+    log::info!("Scanner: starting file collection for {} paths", paths_owned.len());
+
+    // Run all blocking I/O (walkdir + lofty) on a thread-pool thread
+    let track_infos = tokio::task::spawn_blocking(move || {
+        collect_track_infos(&paths_owned)
+    })
+    .await??;
+
+    log::info!("Scanner: collected {} tracks, starting DB writes", track_infos.len());
+
+    let scanned = track_infos.len();
+    let errors = 0usize;
+
+    // Group by artist for upserts
+    let mut artists: HashMap<String, (String, String)> = HashMap::new(); // artist_id -> (name, json)
+    let mut albums: HashMap<String, (String, String, String)> = HashMap::new(); // album_key -> (album_key, artist_id, json)
+
+    for t in &track_infos {
+        artists.entry(t.artist_id.clone()).or_insert_with(|| {
+            let json = serde_json::json!({
+                "Id": t.artist_id,
+                "Name": t.album_artist,
+                "RunTimeTicks": 0,
+                "Type": "",
+                "UserData": {},
+                "DateCreated": ""
+            })
+            .to_string();
+            (t.album_artist.clone(), json)
+        });
+
+        albums.entry(t.album_key.clone()).or_insert_with(|| {
+            let json = serde_json::json!({
+                "Id": t.album_key,
+                "Name": t.album_name,
+                "AlbumArtists": [{"Id": t.artist_id, "Name": t.album_artist}],
+                "UserData": {},
+                "DateCreated": "",
+                "ParentId": "",
+                "RunTimeTicks": 0,
+                "ProductionYear": 0,
+                "PremiereDate": ""
+            })
+            .to_string();
+            (t.album_key.clone(), t.artist_id.clone(), json)
+        });
+    }
+
+    let mut tx = pool.begin().await?;
+
+    for (artist_id, (_, artist_json)) in &artists {
+        sqlx::query(
+            "INSERT INTO artists (id, artist) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET artist = excluded.artist",
+        )
+        .bind(artist_id)
+        .bind(artist_json)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    for (album_key, (_, _, album_json)) in &albums {
+        sqlx::query(
+            r#"INSERT INTO albums (id, album) VALUES (?, ?)
+               ON CONFLICT(id) DO UPDATE SET album = excluded.album"#,
+        )
+        .bind(album_key)
+        .bind(album_json)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    let mut inserted = 0usize;
+    for t in &track_infos {
+        let track_json = serde_json::json!({
+            "Id": t.track_id,
+            "Name": t.title,
+            "Album": t.album_name,
+            "AlbumId": t.album_key,
+            "AlbumArtist": t.album_artist,
+            "AlbumArtists": [{"Id": t.artist_id, "Name": t.album_artist}],
+            "Artists": [t.artist_name],
+            "IndexNumber": t.track_num,
+            "ParentIndexNumber": 1,
+            "ProductionYear": t.year,
+            "RunTimeTicks": t.run_time_ticks,
+            "Genres": t.genres,
+            "HasLyrics": false,
+            "download_status": "Downloaded",
+            "file_path": t.path,
+            "ServerId": "",
+            "ParentId": t.album_key,
+            "DateCreated": "",
+            "MediaType": "",
+            "PremiereDate": "",
+            "BackdropImageTags": [],
+            "ChannelId": null,
+            "IsFolder": false,
+            "MediaSources": [],
+            "NormalizationGain": 0.0,
+            "PlaylistItemId": "",
+            "UserData": {},
+            "disliked": false
+        })
+        .to_string();
+
+        sqlx::query(
+            r#"INSERT INTO tracks (id, album_id, download_status, track)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   track = excluded.track,
+                   download_status = excluded.download_status"#,
+        )
+        .bind(&t.track_id)
+        .bind(&t.album_key)
+        .bind("Downloaded")
+        .bind(&track_json)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"INSERT INTO artist_membership (artist_id, track_id)
+               VALUES (?, ?)
+               ON CONFLICT DO NOTHING"#,
+        )
+        .bind(&t.artist_id)
+        .bind(&t.track_id)
+        .execute(&mut *tx)
+        .await?;
+
+        inserted += 1;
+    }
+
+    tx.commit().await?;
+
+    log::info!(
+        "Scan complete: {} files scanned, {} inserted/updated, {} errors",
+        scanned,
+        inserted,
+        errors
+    );
+
+    Ok(ScanStats { scanned, inserted, errors })
+}
+
+fn collect_track_infos(
+    paths: &[String],
+) -> Result<Vec<TrackInfo>, Box<dyn std::error::Error + Send + Sync>> {
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     for root in paths {
+        log::info!("Scanner: walking {}", root);
         for entry in WalkDir::new(root).follow_links(true).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path().to_path_buf();
             if path.is_file() && is_audio(&path) {
@@ -57,219 +213,100 @@ pub async fn scan_paths(
             }
         }
     }
+    log::info!("Scanner: found {} audio files", files.len());
 
-    // Group by album to build Artist/Album records
-    // album_key -> (album_artist, album_name, Vec<track_path>)
-    let mut album_map: HashMap<String, (String, String, Vec<std::path::PathBuf>)> = HashMap::new();
+    let mut infos = Vec::with_capacity(files.len());
 
-    for file in &files {
-        stats.scanned += 1;
+    for (i, file) in files.iter().enumerate() {
+        log::info!("Scanner: reading tags [{}/{}] {}", i + 1, files.len(), file.display());
         let path_str = file.to_string_lossy().to_string();
+        let track_id = path_id(&path_str);
 
         let tagged = match lofty::read_from_path(file) {
-            Ok(t) => t,
+            Ok(t) => { log::info!("Scanner: OK {}", file.display()); t }
             Err(e) => {
-                log::warn!("Failed to read tags from {}: {}", path_str, e);
-                stats.errors += 1;
-                continue;
-            }
-        };
-
-        let tag = match tagged.primary_tag().or_else(|| tagged.first_tag()) {
-            Some(t) => t,
-            None => {
-                // No tags: use filename as title
-                let title = file.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                log::warn!("Scanner: FAILED {} - {}", file.display(), e);
+                // Still add the file with unknown metadata
                 let album_artist = "Unknown Artist".to_string();
                 let album_name = "Unknown Album".to_string();
-                let key = path_id(&format!("{}{}", album_artist, album_name));
-                album_map
-                    .entry(key)
-                    .or_insert_with(|| (album_artist, album_name, Vec::new()))
-                    .2
-                    .push(file.clone());
+                let album_key = path_id(&format!("{}{}", album_artist, album_name));
+                let artist_id = path_id(&album_artist.to_ascii_lowercase());
+                let title = file.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                infos.push(TrackInfo {
+                    path: path_str,
+                    track_id,
+                    album_key,
+                    album_artist,
+                    album_name,
+                    artist_id,
+                    title,
+                    artist_name: "Unknown Artist".to_string(),
+                    track_num: 1,
+                    year: 0,
+                    genres: vec![],
+                    run_time_ticks: 0,
+                });
                 continue;
             }
         };
 
-        let album_artist = {
-            let aa = read_tag_string(tag, lofty::tag::ItemKey::AlbumArtist);
-            if aa.is_empty() {
-                read_tag_string(tag, lofty::tag::ItemKey::TrackArtist)
-            } else {
-                aa
-            }
-        };
-        let album_artist = if album_artist.is_empty() { "Unknown Artist".to_string() } else { album_artist };
-        let album_name = {
-            let a = read_tag_string(tag, lofty::tag::ItemKey::AlbumTitle);
-            if a.is_empty() { "Unknown Album".to_string() } else { a }
-        };
-        let album_key = path_id(&format!("{}{}", album_artist, album_name));
-        album_map
-            .entry(album_key)
-            .or_insert_with(|| (album_artist, album_name, Vec::new()))
-            .2
-            .push(file.clone());
-    }
+        let props = tagged.properties();
+        let run_time_ticks = (props.duration().as_secs_f64() * 10_000_000.0) as u64;
 
-    let mut tx = pool.begin().await?;
+        let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
 
-    for (album_key, (album_artist, album_name, track_files)) in &album_map {
-        // Upsert artist
-        let artist_id = path_id(&album_artist.to_ascii_lowercase());
-        let artist_json = serde_json::json!({
-            "Id": artist_id,
-            "Name": album_artist,
-            "RunTimeTicks": 0,
-            "Type": "",
-            "UserData": {},
-            "DateCreated": ""
-        })
-        .to_string();
-        sqlx::query(
-            "INSERT INTO artists (id, artist) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET artist = excluded.artist",
-        )
-        .bind(&artist_id)
-        .bind(&artist_json)
-        .execute(&mut *tx)
-        .await?;
-
-        // Upsert album
-        let album_json = serde_json::json!({
-            "Id": album_key,
-            "Name": album_name,
-            "AlbumArtists": [{"Id": artist_id, "Name": album_artist}],
-            "UserData": {},
-            "DateCreated": "",
-            "ParentId": "",
-            "RunTimeTicks": 0,
-            "ProductionYear": 0,
-            "PremiereDate": ""
-        })
-        .to_string();
-        sqlx::query(
-            r#"INSERT INTO albums (id, album) VALUES (?, ?)
-               ON CONFLICT(id) DO UPDATE SET album = excluded.album"#,
-        )
-        .bind(&album_key)
-        .bind(&album_json)
-        .execute(&mut *tx)
-        .await?;
-
-        // Upsert tracks
-        for file in track_files {
-            let path_str = file.to_string_lossy().to_string();
-            let track_id = path_id(&path_str);
-
-            let tagged = match lofty::read_from_path(file) {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-
-            let props = tagged.properties();
-            let duration_secs = props.duration().as_secs_f64();
-            let run_time_ticks = (duration_secs * 10_000_000.0) as u64;
-            let _bitrate = props.overall_bitrate().unwrap_or(0) as u64;
-
-            let (title, artist_name, track_num, year, genres) = match tagged.primary_tag().or_else(|| tagged.first_tag()) {
-                Some(tag) => {
-                    let title = {
-                        let t = read_tag_string(tag, lofty::tag::ItemKey::TrackTitle);
-                        if t.is_empty() {
-                            file.file_stem().unwrap_or_default().to_string_lossy().to_string()
-                        } else {
-                            t
-                        }
-                    };
-                    let artist = {
-                        let a = read_tag_string(tag, lofty::tag::ItemKey::TrackArtist);
-                        if a.is_empty() { album_artist.clone() } else { a }
-                    };
-                    let num = tag.track().unwrap_or(1) as u64;
-                    let y = tag.year().unwrap_or(0) as u64;
-                    let g: Vec<String> = tag
-                        .get_string(&lofty::tag::ItemKey::Genre)
-                        .map(|s| vec![s.to_string()])
-                        .unwrap_or_default();
-                    (title, artist, num, y, g)
+        let album_artist = tag
+            .map(|t| {
+                let aa = read_tag_string(t, lofty::tag::ItemKey::AlbumArtist);
+                if aa.is_empty() {
+                    read_tag_string(t, lofty::tag::ItemKey::TrackArtist)
+                } else {
+                    aa
                 }
-                None => (
-                    file.file_stem().unwrap_or_default().to_string_lossy().to_string(),
-                    album_artist.clone(),
-                    1u64,
-                    0u64,
-                    vec![],
-                ),
-            };
-
-            let track_json = serde_json::json!({
-                "Id": track_id,
-                "Name": title,
-                "Album": album_name,
-                "AlbumId": album_key,
-                "AlbumArtist": album_artist,
-                "AlbumArtists": [{"Id": artist_id, "Name": album_artist}],
-                "Artists": [artist_name],
-                "IndexNumber": track_num,
-                "ParentIndexNumber": 1,
-                "ProductionYear": year,
-                "RunTimeTicks": run_time_ticks,
-                "Genres": genres,
-                "HasLyrics": false,
-                "download_status": "Downloaded",
-                "file_path": path_str,
-                "ServerId": "",
-                "ParentId": album_key,
-                "DateCreated": "",
-                "MediaType": "",
-                "PremiereDate": "",
-                "BackdropImageTags": [],
-                "ChannelId": null,
-                "IsFolder": false,
-                "MediaSources": [],
-                "NormalizationGain": 0.0,
-                "PlaylistItemId": "",
-                "UserData": {},
-                "disliked": false
             })
-            .to_string();
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Unknown Artist".to_string());
 
-            sqlx::query(
-                r#"INSERT INTO tracks (id, album_id, artist_items, download_status, track)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       track = excluded.track,
-                       download_status = excluded.download_status"#,
-            )
-            .bind(&track_id)
-            .bind(&album_key)
-            .bind("[]")
-            .bind("Downloaded")
-            .bind(&track_json)
-            .execute(&mut *tx)
-            .await?;
+        let album_name = tag
+            .map(|t| read_tag_string(t, lofty::tag::ItemKey::AlbumTitle))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Unknown Album".to_string());
 
-            sqlx::query(
-                r#"INSERT INTO artist_membership (artist_id, track_id)
-                   VALUES (?, ?)
-                   ON CONFLICT DO NOTHING"#,
-            )
-            .bind(&artist_id)
-            .bind(&track_id)
-            .execute(&mut *tx)
-            .await?;
+        let title = tag
+            .map(|t| read_tag_string(t, lofty::tag::ItemKey::TrackTitle))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| file.file_stem().unwrap_or_default().to_string_lossy().to_string());
 
-            stats.inserted += 1;
-        }
+        let artist_name = tag
+            .map(|t| read_tag_string(t, lofty::tag::ItemKey::TrackArtist))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| album_artist.clone());
+
+        let track_num = tag.and_then(|t| t.track()).unwrap_or(1) as u64;
+        let year = tag.and_then(|t| t.year()).unwrap_or(0) as u64;
+        let genres = tag
+            .and_then(|t| t.get_string(&lofty::tag::ItemKey::Genre))
+            .map(|s| vec![s.to_string()])
+            .unwrap_or_default();
+
+        let album_key = path_id(&format!("{}{}", album_artist, album_name));
+        let artist_id = path_id(&album_artist.to_ascii_lowercase());
+
+        infos.push(TrackInfo {
+            path: path_str,
+            track_id,
+            album_key,
+            album_artist,
+            album_name,
+            artist_id,
+            title,
+            artist_name,
+            track_num,
+            year,
+            genres,
+            run_time_ticks,
+        });
     }
 
-    tx.commit().await?;
-    log::info!(
-        "Scan complete: {} files scanned, {} inserted/updated, {} errors",
-        stats.scanned,
-        stats.inserted,
-        stats.errors
-    );
-    Ok(stats)
+    Ok(infos)
 }
