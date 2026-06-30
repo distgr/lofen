@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=jellyfin-tui
+Name=lofen
 GenericName=Music Player
 Comment=Modern music streaming client for the terminal.
-Exec=jellyfin-tui
+Exec=lofen
 Terminal=true
 Categories=Audio;AudioVideo;Player;ConsoleOnly;
 Keywords=streaming;music;jellyfin;

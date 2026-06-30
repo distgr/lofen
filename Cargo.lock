@@ -2098,48 +2098,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
-name = "jellyfin-tui"
-version = "1.5.0"
-dependencies = [
- "arboard",
- "chrono",
- "cocoa 0.26.1",
- "color-thief",
- "crokey",
- "crossterm 0.29.0",
- "dialoguer",
- "dirs",
- "discord-rich-presence",
- "flexi_logger",
- "fs2",
- "futures-util",
- "image",
- "indexmap",
- "libmpv2",
- "lofty",
- "log",
- "objc",
- "rand 0.10.0",
- "random-string",
- "ratatui",
- "ratatui-image",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "souvlaki",
- "sqlx",
- "strum 0.28.0",
- "strum_macros 0.28.0",
- "tokio",
- "tokio-tungstenite",
- "unicode-normalization",
- "url",
- "walkdir",
-]
-
-[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2317,6 +2275,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
 dependencies = [
  "scopeguard",
+]
+
+[[package]]
+name = "lofen"
+version = "1.5.0"
+dependencies = [
+ "arboard",
+ "chrono",
+ "cocoa 0.26.1",
+ "color-thief",
+ "crokey",
+ "crossterm 0.29.0",
+ "dialoguer",
+ "dirs",
+ "discord-rich-presence",
+ "flexi_logger",
+ "fs2",
+ "futures-util",
+ "image",
+ "indexmap",
+ "libmpv2",
+ "lofty",
+ "log",
+ "objc",
+ "rand 0.10.0",
+ "random-string",
+ "ratatui",
+ "ratatui-image",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "souvlaki",
+ "sqlx",
+ "strum 0.28.0",
+ "strum_macros 0.28.0",
+ "tokio",
+ "tokio-tungstenite",
+ "unicode-normalization",
+ "url",
+ "walkdir",
 ]
 
 [[package]]

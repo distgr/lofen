@@ -26,8 +26,8 @@ pub fn prepare_directories() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = data_dir().expect(" ! Failed getting data directory");
     let config_dir = config_dir().expect(" ! Failed getting config directory");
 
-    let j_data_dir = data_dir.join("jellyfin-tui");
-    let j_config_dir = config_dir.join("jellyfin-tui");
+    let j_data_dir = data_dir.join("lofen");
+    let j_config_dir = config_dir.join("lofen");
 
     std::fs::create_dir_all(&j_data_dir)?;
     std::fs::create_dir_all(&j_config_dir)?;
@@ -49,7 +49,7 @@ pub fn get_config() -> Result<(PathBuf, serde_yaml::Value), Box<dyn std::error::
         None => return Err("Could not find config directory".into()),
     };
 
-    let config_file: PathBuf = config_dir.join("jellyfin-tui").join("config.yaml").into();
+    let config_file: PathBuf = config_dir.join("lofen").join("config.yaml").into();
 
     if !config_file.exists() {
         return Ok((config_file, serde_yaml::Value::Mapping(Default::default())));
@@ -71,7 +71,7 @@ pub fn initialize_config() {
         }
     };
 
-    let config_file = config_dir.join("jellyfin-tui").join("config.yaml");
+    let config_file = config_dir.join("lofen").join("config.yaml");
 
     if config_file.exists() {
         println!(" - Config loaded: {}", config_file.display());
@@ -105,7 +105,7 @@ pub fn get_music_paths(config: &serde_yaml::Value) -> Vec<String> {
 
 pub fn save_music_paths(paths: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = config_dir().ok_or("no config dir")?;
-    let config_file = config_dir.join("jellyfin-tui").join("config.yaml");
+    let config_file = config_dir.join("lofen").join("config.yaml");
 
     let (_, mut config) = get_config()?;
 

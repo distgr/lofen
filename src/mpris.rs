@@ -20,7 +20,7 @@ pub fn mpris() -> Result<MediaControls, Box<dyn std::error::Error>> {
         let hwnd = None;
 
         let config =
-            PlatformConfig { dbus_name: "jellyfin-tui", display_name: "jellyfin-tui", hwnd };
+            PlatformConfig { dbus_name: "lofen", display_name: "lofen", hwnd };
 
         match MediaControls::new(config) {
             Ok(controls) => {

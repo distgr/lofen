@@ -390,7 +390,7 @@ impl State {
         offline: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let data_dir = data_dir().unwrap();
-        let states_dir = data_dir.join("jellyfin-tui").join("states");
+        let states_dir = data_dir.join("lofen").join("states");
 
         let filename = if offline {
             format!("offline_{}.json", server_id)
@@ -416,7 +416,7 @@ impl State {
     ///
     pub fn load(server_id: &String, is_offline: bool) -> Result<State, Box<dyn std::error::Error>> {
         let data_dir = data_dir().unwrap();
-        let states_dir = data_dir.join("jellyfin-tui").join("states");
+        let states_dir = data_dir.join("lofen").join("states");
         match OpenOptions::new().read(true).open(states_dir.join(if is_offline {
             format!("offline_{}.json", server_id)
         } else {
@@ -674,7 +674,7 @@ impl Preferences {
     ///
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         let data_dir = data_dir().unwrap();
-        let preferences_dir = data_dir.join("jellyfin-tui").join("preferences");
+        let preferences_dir = data_dir.join("lofen").join("preferences");
         match OpenOptions::new()
             .create(true)
             .write(true)
@@ -696,7 +696,7 @@ impl Preferences {
     ///
     pub fn load(server_id: String) -> Result<Preferences, Box<dyn std::error::Error>> {
         let data_dir = data_dir().unwrap();
-        let base_dir = data_dir.join("jellyfin-tui");
+        let base_dir = data_dir.join("lofen");
         let preferences_dir = base_dir.join("preferences");
 
         let new_path = preferences_dir.join(format!("{}.json", server_id));

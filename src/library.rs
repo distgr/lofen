@@ -1195,7 +1195,7 @@ impl App {
         };
 
         if self.tracks.is_empty() {
-            let message_paragraph = Paragraph::new("jellyfin-tui")
+            let message_paragraph = Paragraph::new("lofen")
                 .block(
                     track_block
                         .title(Line::from("Tracks").fg(section_title_color))
@@ -1468,7 +1468,7 @@ impl App {
         };
 
         if self.album_tracks.is_empty() {
-            let message_paragraph = Paragraph::new("jellyfin-tui")
+            let message_paragraph = Paragraph::new("lofen")
                 .block(
                     track_block
                         .title(Line::from("Tracks").fg(section_title_color))
@@ -1640,7 +1640,7 @@ impl App {
                 if song.is_transcoded {
                     flags.push("tc");
                 }
-                if song.url.contains("jellyfin-tui/downloads") {
+                if song.url.contains("lofen/downloads") {
                     flags.push(&self.symbols.downloaded);
                 }
 

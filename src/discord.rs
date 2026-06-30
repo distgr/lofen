@@ -189,9 +189,9 @@ fn resolve_musicbrainz_cover(track: &Song) -> Option<String> {
         .header(
             "User-Agent",
             concat!(
-                "jellyfin-tui/",
+                "lofen/",
                 env!("CARGO_PKG_VERSION"),
-                " ( https://github.com/dhonus/jellyfin-tui )"
+                " ( https://github.com/dhonus/lofen )"
             ),
         )
         .query(&[("query", &query), ("fmt", &"json".to_string()), ("limit", &"1".to_string())])

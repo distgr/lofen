@@ -525,7 +525,7 @@ impl App {
             cover_art_path: String::from(""),
             cover_art_dir: data_dir()
                 .unwrap_or_else(|| PathBuf::from("./"))
-                .join("jellyfin-tui")
+                .join("lofen")
                 .join("covers")
                 .to_str()
                 .unwrap_or("")
@@ -573,7 +573,7 @@ impl App {
             client_ws_rx,
             network_quality,
             discord,
-            downloads_dir: data_dir().unwrap().join("jellyfin-tui").join("downloads"),
+            downloads_dir: data_dir().unwrap().join("lofen").join("downloads"),
 
             mpris_paused: true,
             mpris_active_song_id: String::from(""),
@@ -613,7 +613,7 @@ impl App {
     fn get_database_file() -> (String, String) {
         let db_path = data_dir()
             .unwrap()
-            .join("jellyfin-tui")
+            .join("lofen")
             .join("databases")
             .join("local.db")
             .to_string_lossy()
@@ -1704,7 +1704,7 @@ impl App {
                 };
 
                 if t.is_empty() && a.is_empty() && al.is_empty() && y.is_empty() {
-                    "jellyfin-tui".to_string()
+                    "lofen".to_string()
                 } else {
                     let mut out = self
                         .window_title_format
@@ -1719,13 +1719,13 @@ impl App {
                     out = out.trim().trim_matches(|c: char| " -–—".contains(c)).to_string();
 
                     if out.is_empty() {
-                        "jellyfin-tui".to_string()
+                        "lofen".to_string()
                     } else {
                         out
                     }
                 }
             }
-            None => "jellyfin-tui".to_string(),
+            None => "lofen".to_string(),
         };
 
         let safe = title.replace(['\x1b', '\x07'], " ");
@@ -2148,7 +2148,7 @@ impl App {
             )));
         }
         let data_dir = data_dir().unwrap();
-        let cover_dir = data_dir.join("jellyfin-tui").join("covers");
+        let cover_dir = data_dir.join("lofen").join("covers");
 
         // When track_based_art is on, prefer the song's own image; fall back to the album image.
         // When track_based_art is off, only look for the album image (no fallback needed).

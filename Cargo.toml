@@ -1,5 +1,5 @@
 [package]
-name = "jellyfin-tui"
+name = "lofen"
 version = "1.5.0"
 edition = "2021"
 

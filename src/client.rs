@@ -118,7 +118,7 @@ impl Client {
         let response = http_client
             .post(&url)
             .header("Content-Type", "application/json")
-            .header("Authorization", format!("MediaBrowser Client=\"jellyfin-tui\", Device=\"jellyfin-tui\", DeviceId=\"{}\", Version=\"{}\"", &device_id, env!("CARGO_PKG_VERSION")))
+            .header("Authorization", format!("MediaBrowser Client=\"lofen\", Device=\"lofen\", DeviceId=\"{}\", Version=\"{}\"", &device_id, env!("CARGO_PKG_VERSION")))
             .json(&serde_json::json!({
                 "Username": &username,
                 "Pw": &password,
@@ -202,7 +202,7 @@ impl Client {
         let device_id = random_string();
 
         let auth_header = format!(
-            "MediaBrowser Client=\"jellyfin-tui\", Device=\"jellyfin-tui\", DeviceId=\"{}\", Version=\"{}\"",
+            "MediaBrowser Client=\"lofen\", Device=\"lofen\", DeviceId=\"{}\", Version=\"{}\"",
             device_id,
             env!("CARGO_PKG_VERSION")
         );
@@ -211,10 +211,10 @@ impl Client {
             .post(format!("{}/QuickConnect/Initiate", base_url))
             .header("Authorization", &auth_header)
             .json(&serde_json::json!({
-                "AppName": "jellyfin-tui",
+                "AppName": "lofen",
                 "AppVersion": env!("CARGO_PKG_VERSION"),
                 "DeviceId": device_id,
-                "DeviceName": "jellyfin-tui",
+                "DeviceName": "lofen",
             }))
             .send()
             .await
@@ -358,7 +358,7 @@ impl Client {
             "Authorization".into(),
             format!(
                 "MediaBrowser Client=\"{}\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\", Token=\"{}\"",
-                "jellyfin-tui", "jellyfin-tui", device_id, env!("CARGO_PKG_VERSION"), access_token
+                "lofen", "lofen", device_id, env!("CARGO_PKG_VERSION"), access_token
             )
         )
     }
@@ -973,7 +973,7 @@ impl Client {
 
         let bytes = response.bytes().await?.to_vec();
 
-        let cover_dir = data_dir().unwrap().join("jellyfin-tui").join("covers");
+        let cover_dir = data_dir().unwrap().join("lofen").join("covers");
         tokio::fs::create_dir_all(&cover_dir).await?;
 
         let final_path = cover_dir.join(format!("{}.{}", item_id, extension));

@@ -50,7 +50,7 @@ async fn main() {
     if args.len() > 1 {
         if args[1] == "--version" || args[1] == "-v" {
             println!(
-                "jellyfin-tui {version} (libmpv {major}.{minor} {ver})",
+                "lofen {version} (libmpv {major}.{minor} {ver})",
                 version = version,
                 major = MPV_CLIENT_API_MAJOR,
                 minor = MPV_CLIENT_API_MINOR,
@@ -70,7 +70,7 @@ async fn main() {
         println!(
             "
   ⠀⠀⠀⠀⡴⠂⢩⡉⠉⠉⡖⢄⠀
-  ⠀⠀⠀⢸⠪⠄⠀⠀⠀⠀⠐⠂⢧⠀⠀⠀\x1b[94mjellyfin-tui\x1b[0m
+  ⠀⠀⠀⢸⠪⠄⠀⠀⠀⠀⠐⠂⢧⠀⠀⠀\x1b[94mlofen\x1b[0m
   ⠀⠀⠀⠙⢳⣢⢬⣁⠀⠛⠀⠂⡞
   ⠀⣀⡤⢔⠟⣌⠷⠡⢽⢭⠝⠭⠁⠀⠀⠀⠀-⠀version⠀{}
   ⡸⣡⠴⡫⢺⠏⡇⢰⠸⠘⡄⠀⠀⠀⠀⠀⠀-⠀libmpv {}.{} ({})
@@ -96,7 +96,7 @@ async fn main() {
         log::error!("Panic occurred: {}", info);
         log::error!("Backtrace:\n{}", bt);
         eprintln!("\n ! (×_×) panik: {}", info);
-        eprintln!(" ! If you think this is a bug, please report it at https://github.com/dhonus/jellyfin-tui/issues");
+        eprintln!(" ! If you think this is a bug, please report it at https://github.com/dhonus/lofen/issues");
     }));
 
     match config::prepare_directories() {
@@ -107,14 +107,14 @@ async fn main() {
         }
     }
 
-    let data_dir = dirs::data_dir().expect("! Could not find data directory").join("jellyfin-tui");
+    let data_dir = dirs::data_dir().expect("! Could not find data directory").join("lofen");
 
     let _logger = Logger::try_with_env_or_str("info,zbus=error")
         .expect(" ! Failed to initialize logger")
         .log_to_file(
             FileSpec::default()
                 .directory(data_dir.join("log"))
-                .basename("jellyfin-tui")
+                .basename("lofen")
                 .suffix("log"),
         )
         .rotate(
@@ -125,7 +125,7 @@ async fn main() {
         .format(flexi_logger::detailed_format)
         .start();
 
-    log::info!("jellyfin-tui {} started", version);
+    log::info!("lofen {} started", version);
 
     config::initialize_config();
 
@@ -176,7 +176,7 @@ async fn main() {
 
 fn check_single_instance() -> File {
     let runtime_dir = match data_dir() {
-        Some(dir) => dir.join("jellyfin-tui.lock"),
+        Some(dir) => dir.join("lofen.lock"),
         None => {
             println!("Could not find runtime directory");
             std::process::exit(1);
@@ -199,7 +199,7 @@ fn check_single_instance() -> File {
 
     if let Err(e) = file.try_lock_exclusive() {
         if e.kind() == std::io::ErrorKind::WouldBlock {
-            println!("Another instance of jellyfin-tui is already running.");
+            println!("Another instance of lofen is already running.");
             std::process::exit(0);
         }
         println!("Failed to lock the lockfile: {} ", e);
@@ -211,8 +211,8 @@ fn check_single_instance() -> File {
 }
 
 fn print_help() {
-    println!("jellyfin-tui {}", env!("CARGO_PKG_VERSION"));
-    println!("Usage: jellyfin-tui [OPTIONS]");
+    println!("lofen {}", env!("CARGO_PKG_VERSION"));
+    println!("Usage: lofen [OPTIONS]");
     println!("\nArguments:");
     println!("  --version\t\tPrint version information");
     println!("  --help\t\tPrint this help message");
