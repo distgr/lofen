@@ -11,7 +11,7 @@ use crate::{
 use core::panic;
 use reqwest::header::CONTENT_LENGTH;
 use sqlx::{Pool, Sqlite, SqlitePool};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -54,6 +54,7 @@ pub enum Status {
     UpdateStarted,
     UpdateFinished,
     UpdateFailed { error: String },
+    ScanFinished { scanned: usize, inserted: usize },
 
     ProgressUpdate { progress: f32 },
     AllDownloaded,
@@ -1100,30 +1101,32 @@ async fn offline_tracks_checker(
 
     let mut tx_db = pool.begin().await?;
 
-    // Fetch track IDs and album IDs
-    let tracks: Vec<(String, String)> =
-        sqlx::query_as("SELECT id, album_id FROM tracks WHERE download_status = 'Downloaded';")
+    // Fetch track IDs, album IDs, and track JSON (for local file_path)
+    let tracks: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT id, album_id, COALESCE(track, '{}') FROM tracks WHERE download_status = 'Downloaded';")
             .fetch_all(&mut *tx_db)
             .await?;
     tx_db.commit().await?;
 
-    // Group tracks by album_id
-    let mut grouped_tracks: HashMap<String, Vec<String>> = HashMap::new();
-    for (id, album_id) in tracks {
-        grouped_tracks.entry(album_id).or_default().push(id);
-    }
-
     let mut missing_ids = Vec::new();
 
-    // Check file existence per album
-    for (album_id, track_ids) in &grouped_tracks {
-        let album_path = data_dir.join(&server_id).join(&album_id);
-        for id in track_ids {
-            let file_path = album_path.join(&id);
-            if tokio::fs::metadata(&file_path).await.is_err() {
-                missing_ids.push(id.clone());
-                let _ = tx.send(Status::TrackDeleted { id: id.clone() }).await;
-            }
+    for (id, album_id, track_json) in &tracks {
+        // For local tracks (file_path in JSON), check the actual file path
+        let file_path_from_json = serde_json::from_str::<serde_json::Value>(track_json)
+            .ok()
+            .and_then(|v| v.get("file_path").and_then(|p| p.as_str()).map(|s| s.to_string()))
+            .filter(|s| !s.is_empty());
+
+        let resolved_path = if let Some(fp) = file_path_from_json {
+            std::path::PathBuf::from(fp)
+        } else {
+            // Jellyfin-downloaded track: check the downloads directory
+            data_dir.join(&server_id).join(&album_id).join(&id)
+        };
+
+        if tokio::fs::metadata(&resolved_path).await.is_err() {
+            missing_ids.push(id.clone());
+            let _ = tx.send(Status::TrackDeleted { id: id.clone() }).await;
         }
     }
 
@@ -1142,7 +1145,7 @@ async fn offline_tracks_checker(
     let elapsed_time = start_time.elapsed();
     log::info!(
         "Offline tracks checker finished. Checked {} tracks in {:.2}s.",
-        grouped_tracks.iter().map(|(_, v)| v.len()).sum::<usize>(),
+        tracks.len(),
         elapsed_time.as_secs_f32()
     );
 

@@ -4,7 +4,6 @@ use crate::{
     client::{Album, Artist, Client, DiscographySong, Lyric, Playlist},
     database::database::data_updater,
     keyboard::ActiveSection,
-    popup::PopupMenu,
     tui,
 };
 use serde::{Deserialize, Serialize};
@@ -90,12 +89,6 @@ impl tui::App {
                 self.network_quality = network_quality;
             }
             Status::AllDownloaded => {
-                // pretty nifty huh
-                if let Some(popup) = &mut self.popup.current_menu {
-                    if let PopupMenu::GlobalRoot { downloading, .. } = popup {
-                        *downloading = false;
-                    }
-                }
                 self.download_item = None;
             }
             Status::ProgressUpdate { progress } => {
@@ -130,11 +123,6 @@ impl tui::App {
             }
             Status::TrackDownloading { track } => {
                 self.download_item = Some(DownloadItem { name: track.name, progress: 0.0 });
-                if let Some(popup) = &mut self.popup.current_menu {
-                    if let PopupMenu::GlobalRoot { downloading, .. } = popup {
-                        *downloading = true;
-                    }
-                }
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track.id) {
                     track.download_status = DownloadStatus::Downloading;
                 }
@@ -254,6 +242,13 @@ impl tui::App {
                 }
                 self.db_updating = false;
             }
+            Status::ScanFinished { scanned, inserted } => {
+                self.scan_status = Some(format!(
+                    "Scan complete: {} files found, {} tracks added/updated",
+                    scanned, inserted
+                ));
+                self.dirty = true;
+            }
             Status::UpdateFailed { error } => {
                 self.state.last_section = self.state.active_section;
                 self.state.active_section = ActiveSection::Popup;
@@ -278,12 +273,7 @@ impl tui::App {
         db_path: &String,
     ) -> Result<Arc<Pool<Sqlite>>, Box<dyn std::error::Error>> {
         if !Sqlite::database_exists(db_path).await.unwrap_or(false) {
-            if client.is_none() {
-                return Err("Database does not exist and you are offline. Please connect to the internet and try again.".into());
-            }
-            let client = client.as_ref().unwrap().clone();
-
-            println!(" ! Creating database {}", db_path);
+            println!(" - Creating database {}", db_path);
             Sqlite::create_database(db_path).await?;
 
             let pool = Arc::new(SqlitePool::connect(db_path)
@@ -293,11 +283,14 @@ impl tui::App {
             sqlx::query("PRAGMA journal_mode = WAL;").execute(&*pool).await?;
             run_migrations(&*pool).await?;
 
-            println!(" - Database created. Fetching library data (this may take a while)...");
-
-            if let Err(e) = data_updater(Arc::clone(&pool), None, client).await {
-                println!(" ! Initial data fetch failed: {}", e);
-                return Err(e);
+            if let Some(client) = client.as_ref().map(|c| c.clone()) {
+                println!(" - Fetching library data (this may take a while)...");
+                if let Err(e) = data_updater(Arc::clone(&pool), None, client).await {
+                    println!(" ! Initial data fetch failed: {}", e);
+                    return Err(e);
+                }
+            } else {
+                println!(" - Empty local database created. Add music paths in Settings (press 4) and scan.");
             }
 
             pool.close().await;
@@ -336,21 +329,20 @@ impl tui::App {
             println!(" - Library size (this server): {}", total_download_size_human);
         }
 
-        // 1.2.6 -> 1.3.0; this should basically always be 1 at least, if not we update anyway which is fine
-        let library_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM libraries")
-            .fetch_one(&*pool)
-            .await
-            .unwrap_or(0);
-        if library_count == 0 {
-            println!(
-                " ! Database requires an update, re-fetching library data. Do not close the app..."
-            );
-            if client.is_none() {
-                return Err("Database requires an update, but you are offline. Please connect to the internet and try again.".into());
-            }
-            let client = client.as_ref().unwrap().clone();
-            if let Err(e) = data_updater(Arc::clone(&pool), None, client).await {
-                return Err(e);
+        // In local mode (no client), skip the library-count migration check.
+        if client.is_some() {
+            let library_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM libraries")
+                .fetch_one(&*pool)
+                .await
+                .unwrap_or(0);
+            if library_count == 0 {
+                println!(
+                    " ! Database requires an update, re-fetching library data. Do not close the app..."
+                );
+                let client = client.as_ref().unwrap().clone();
+                if let Err(e) = data_updater(Arc::clone(&pool), None, client).await {
+                    return Err(e);
+                }
             }
         }
 
