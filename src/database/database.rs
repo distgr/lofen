@@ -120,7 +120,7 @@ pub async fn t_database<'a>(
     server_id: String,
     network_quality: NetworkQuality,
 ) {
-    let data_dir = dirs::data_dir().unwrap().join("jellyfin-tui").join("downloads");
+    let data_dir = dirs::data_dir().unwrap().join("lofen").join("downloads");
 
     let mut db_interval = tokio::time::interval(Duration::from_secs(1));
     let mut large_update_interval = tokio::time::interval_at(
@@ -487,7 +487,7 @@ async fn handle_update(
         })),
         UpdateCommand::OfflineRepair => {
             let data_dir = match dirs::data_dir() {
-                Some(dir) => dir.join("jellyfin-tui").join("downloads"),
+                Some(dir) => dir.join("lofen").join("downloads"),
                 None => {
                     log::error!("Could not find data directory for offline repair");
                     return None;
@@ -812,7 +812,7 @@ pub async fn t_discography_updater(
     client: Arc<Client>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let data_dir = match dirs::data_dir() {
-        Some(dir) => dir.join("jellyfin-tui").join("downloads").join(&client.server_id),
+        Some(dir) => dir.join("lofen").join("downloads").join(&client.server_id),
         None => return Ok(()),
     };
 
@@ -970,7 +970,7 @@ pub async fn t_playlist_updater(
         rows.into_iter().map(|(id,)| id).filter(|id| !server_ids.contains(id)).collect();
 
     let data_dir = match dirs::data_dir() {
-        Some(dir) => dir.join("jellyfin-tui").join("downloads").join(&client.server_id),
+        Some(dir) => dir.join("lofen").join("downloads").join(&client.server_id),
         None => return Ok(()),
     };
 
@@ -1286,8 +1286,8 @@ async fn track_download_and_update(
     tx: &Sender<Status>,
     cancel_rx: &mut broadcast::Receiver<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let path = dirs::data_dir().unwrap().join("jellyfin-tui").join("downloads");
-    let temp_file = path.join("jellyfin-tui-track.part");
+    let path = dirs::data_dir().unwrap().join("lofen").join("downloads");
+    let temp_file = path.join("lofen-track.part");
     if temp_file.exists() {
         let _ = fs::remove_file(&temp_file).await;
     }
@@ -1547,7 +1547,7 @@ pub async fn mark_missing(
     let mut deleted_artists = false;
     let mut deleted_playlists = false;
     let mut album_paths_to_delete: Vec<PathBuf> = Vec::new();
-    let data_dir = dirs::data_dir().unwrap().join("jellyfin-tui").join("downloads").join(server_id);
+    let data_dir = dirs::data_dir().unwrap().join("lofen").join("downloads").join(server_id);
 
     let mut tx = pool.begin().await?;
 
