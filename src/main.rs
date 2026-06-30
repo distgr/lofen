@@ -14,7 +14,9 @@ mod player;
 mod playlists;
 mod popup;
 mod queue;
+mod scanner;
 mod search;
+mod settings;
 mod sort;
 mod themes;
 mod tui;
@@ -63,9 +65,6 @@ async fn main() {
     }
 
     let _lockfile = check_single_instance();
-
-    let offline = args.contains(&String::from("--offline"));
-    let force_server_select = args.contains(&String::from("--select-server"));
 
     if !args.contains(&String::from("--no-splash")) {
         println!(
@@ -130,7 +129,7 @@ async fn main() {
 
     config::initialize_config();
 
-    let mut app = tui::App::new(offline, force_server_select).await;
+    let mut app = tui::App::new().await;
     if let Err(e) = app.load_state().await {
         println!(" ! Error loading state: {}", e);
     }
@@ -217,9 +216,7 @@ fn print_help() {
     println!("\nArguments:");
     println!("  --version\t\tPrint version information");
     println!("  --help\t\tPrint this help message");
-    println!("  --no-splash\t\tDo not show jellyfish splash screen");
-    println!("  --select-server\tForce server selection on startup");
-    println!("  --offline\t\tStart in offline mode");
+    println!("  --no-splash\t\tDo not show splash screen");
 
     println!("\nControls:");
     println!("  For a list of controls, press '?' in the application.");

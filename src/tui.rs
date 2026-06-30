@@ -8,7 +8,7 @@ Notable fields:
     - controls = MPRIS controls. We use MPRIS for media controls.
 -------------------------- */
 use crate::client::{
-    Album, Artist, AuthMethod, Client, DiscographySong, LibraryView, Lyric, NetworkQuality,
+    Album, Artist, Client, DiscographySong, LibraryView, Lyric, NetworkQuality,
     Playlist, ProgressReport, ProgressReportInternal, QueueItem, RemoteCommand,
     TempDiscographyAlbum, Transcoding,
 };
@@ -18,16 +18,14 @@ use crate::database::database::{
     Command, DownloadCommand, DownloadItem, JellyfinCommand, UpdateCommand,
 };
 use crate::database::extension::{
-    get_album_tracks, get_albums_with_tracks, get_all_albums, get_all_artists, get_all_playlists,
-    get_artists_with_tracks, get_discography, get_libraries, get_lyrics, get_playlist_tracks,
-    get_playlists_with_tracks, insert_lyrics,
+    get_album_tracks, get_albums_with_tracks, get_artists_with_tracks, get_discography,
+    get_libraries, get_lyrics, get_playlist_tracks, get_playlists_with_tracks, insert_lyrics,
 };
 use crate::help::{build_tab_labels, render_help_modal};
 use crate::helpers::{Preferences, State, Symbols};
 use crate::keyboard::{try_load_keymap, ActiveSection, ActiveTab, Selectable};
 use crate::mpv::MpvHandle;
 use crate::popup::PopupState;
-use crate::themes::dialoguer::DialogTheme;
 use crate::themes::theme::Theme;
 use crate::{helpers, mpris, sort};
 
@@ -60,7 +58,6 @@ use std::sync::Arc;
 
 use crokey::{Combiner, KeyCombination};
 
-use dialoguer::Select;
 use discord_rich_presence::activity::StatusDisplayType;
 use indexmap::IndexMap;
 use std::sync::atomic::Ordering;
@@ -212,7 +209,7 @@ pub struct App {
     pub keymap: IndexMap<KeyCombination, crate::keyboard::Action>,
     pub keymap_error: Option<String>,
     pub combiner: Combiner,
-    tab_labels: [String; 4],
+    tab_labels: [String; 5],
     config_watcher: crate::themes::theme::ConfigWatcher,
     pub auto_color: bool, // grab color from cover art (coolest feature ever omg)
     pub border_type: BorderType,
@@ -315,10 +312,16 @@ pub struct App {
 
     pub sleep_timer: Option<SleepTimer>,
     pub sleep_timer_original_volume: Option<i64>,
+
+    // Settings tab state
+    pub settings_adding_path: bool,
+    pub settings_path_input: String,
+    pub settings_selected_path: Option<usize>,
+    pub scan_status: Option<String>,
 }
 
 impl App {
-    pub async fn new(offline: bool, force_server_select: bool) -> Self {
+    pub async fn new() -> Self {
         let (config_path, config) = crate::config::get_config().unwrap_or_else(|e| {
             println!(" ! Failed to load config: {}", e);
             log::error!("Failed to load config: {}", e);
@@ -349,29 +352,12 @@ impl App {
         let (status_tx, status_rx) = mpsc::channel::<database::database::Status>(64);
         let (mpris_tx, mpris_rx) = channel::<MediaControlEvent>();
 
-        // try to go online, construct the http client
-        let (client, network_quality, client_ws_rx, successfully_online) = if !offline {
-            // websocket init
-            let (ws_tx, ws_rx) = tokio::sync::mpsc::channel(64);
-
-            match App::init_online(&config, force_server_select, ws_tx).await {
-                Some((client, network_quality)) => {
-                    let ws_client = Arc::clone(&client);
-
-                    tokio::spawn(async move {
-                        ws_client.run_remote_socket().await;
-                    });
-
-                    (Some(client), network_quality, Some(ws_rx), true)
-                }
-                None => (None, NetworkQuality::Normal, None, false),
-            }
-        } else {
-            (None, NetworkQuality::Normal, None, false)
-        };
+        let client: Option<Arc<Client>> = None;
+        let network_quality = NetworkQuality::Normal;
+        let client_ws_rx: Option<tokio::sync::mpsc::Receiver<RemoteCommand>> = None;
 
         // db init
-        let (db_path, server_id) = Self::get_database_file(&config, &client);
+        let (db_path, server_id) = Self::get_database_file();
         let pool = Self::init_db(&client, &db_path).await.unwrap_or_else(|e| {
             println!(" ! Failed to connect to database {}. Error: {}", db_path, e);
             log::error!("Failed to connect to database {}. Error: {}", db_path, e);
@@ -381,19 +367,15 @@ impl App {
 
         let music_libraries = get_libraries(&db.pool).await;
 
-        let (
-            // load initial data
-            original_artists,
-            original_albums,
-            original_playlists,
-        ) = Self::init_library(&db.pool, successfully_online).await;
+        let (original_artists, original_albums, original_playlists) =
+            Self::init_library(&db.pool).await;
 
         // this is the main background thread
         tokio::spawn(database::database::t_database(
             Arc::clone(&db.pool),
             cmd_rx,
             status_tx,
-            successfully_online,
+            false,
             client.clone(),
             server_id.clone(),
             network_quality,
@@ -569,8 +551,8 @@ impl App {
 
             locally_searching: false,
 
-            discography_stale: client.is_some(),
-            playlist_stale: client.is_some(),
+            discography_stale: false,
+            playlist_stale: false,
             playlist_incomplete: false,
             playlist_editing: false,
             playlist_edit_item_id: None,
@@ -618,124 +600,25 @@ impl App {
 
             sleep_timer: None,
             sleep_timer_original_volume: None,
+
+            settings_adding_path: false,
+            settings_path_input: String::new(),
+            settings_selected_path: None,
+            scan_status: None,
         }
     }
 }
 
 impl App {
-    async fn init_online(
-        config: &serde_yaml::Value,
-        force_server_select: bool,
-        ws_tx: tokio::sync::mpsc::Sender<RemoteCommand>,
-    ) -> Option<(Arc<Client>, NetworkQuality)> {
-        let selected_server = crate::config::select_server(config, force_server_select)?;
-        let mut auth_cache = crate::config::load_auth_cache().unwrap_or_default();
-        let maybe_cached =
-            crate::config::find_cached_auth_by_url(&auth_cache, &selected_server.url);
-
-        let (base_url, network_quality) =
-            Client::probe_server(&reqwest::Client::new(), &selected_server.url).await;
-
-        if let Some((server_id, cached_entry)) = maybe_cached {
-            let client =
-                Client::from_cache(&selected_server.url, server_id, cached_entry, ws_tx.clone())
-                    .await;
-            if client.validate_token().await {
-                return Some((client, network_quality));
-            }
-            println!(" - Expired auth token, re-authenticating...");
-        }
-        let client = match &selected_server.auth {
-            AuthMethod::UserPass { username, password } => {
-                Client::new(&base_url, username, password, ws_tx).await?
-            }
-            AuthMethod::QuickConnect => Client::quick_connect(&base_url, ws_tx).await,
-        };
-        if client.access_token.is_empty() {
-            println!(" ! Failed to authenticate. Please check your credentials and try again.");
-            return None;
-        }
-
-        println!(" - Authenticated as {}.", client.user_name);
-
-        auth_cache =
-            crate::config::update_cache_with_new_auth(auth_cache, &selected_server, &client);
-        if let Err(e) = crate::config::save_auth_cache(&auth_cache) {
-            println!(" ! Failed to update auth cache: {}", e);
-        }
-
-        Some((client, network_quality))
-    }
-
-    /// This will return the database path.
-    /// If online, it will return the path to the database for the current server.
-    /// If offline, it let the user choose which server's database to use.
-    fn get_database_file(
-        config: &serde_yaml::Value,
-        client: &Option<Arc<Client>>,
-    ) -> (String, String) {
-        let data_dir = data_dir().unwrap().join("jellyfin-tui");
-        let db_directory = data_dir.join("databases");
-
-        if let Some(client) = client {
-            return (
-                db_directory
-                    .join(format!("{}.db", client.server_id))
-                    .to_string_lossy()
-                    .into_owned(),
-                client.server_id.clone(),
-            );
-        }
-
-        let servers =
-            config["servers"].as_sequence().expect(" ! Could not find servers in config file");
-
-        let auth_cache = crate::config::load_auth_cache().unwrap_or_default();
-
-        let available = servers
-            .iter()
-            .filter_map(|server| {
-                let name = server.get("name")?.as_str()?;
-                let url = server.get("url")?.as_str()?;
-
-                let (server_id, _) = auth_cache
-                    .iter()
-                    .find(|(_, entry)| entry.known_urls.contains(&url.to_string()))?;
-
-                let db_path = format!("{}.db", server_id);
-                if db_directory.join(&db_path).exists() {
-                    Some((name.to_string(), url.to_string(), db_path, server_id.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<(String, String, String, String)>>();
-
-        match available.len() {
-            0 => {
-                println!(" ! There are no offline databases available.");
-                std::process::exit(1);
-            }
-            _ => {
-                let choices: Vec<String> = available
-                    .iter()
-                    .map(|(name, url, _, _)| format!("{} ({})", name, url))
-                    .collect();
-
-                let selection = Select::with_theme(&DialogTheme::default())
-                    .with_prompt("The following servers are available offline. Select one to use:")
-                    .default(0)
-                    .items(&choices)
-                    .interact()
-                    .unwrap();
-
-                let (_, _, db_path, server_id) = &available[selection];
-                (
-                    db_directory.join(db_path).to_string_lossy().into_owned(),
-                    server_id.to_string().replace(".db", ""),
-                )
-            }
-        }
+    fn get_database_file() -> (String, String) {
+        let db_path = data_dir()
+            .unwrap()
+            .join("jellyfin-tui")
+            .join("databases")
+            .join("local.db")
+            .to_string_lossy()
+            .into_owned();
+        (db_path, "local".to_string())
     }
 
     pub fn init_theme_and_picker(
@@ -758,21 +641,11 @@ impl App {
         (theme.resolve(&theme.accent), picker)
     }
 
-    pub async fn init_library(
-        pool: &sqlx::SqlitePool,
-        online: bool,
-    ) -> (Vec<Artist>, Vec<Album>, Vec<Playlist>) {
-        if online {
-            let artists = get_all_artists(pool).await.unwrap_or_default();
-            let albums = get_all_albums(pool).await.unwrap_or_default();
-            let playlists = get_all_playlists(pool).await.unwrap_or_default();
-            (artists, albums, playlists)
-        } else {
-            let artists = get_artists_with_tracks(pool).await.unwrap_or_default();
-            let albums = get_albums_with_tracks(pool).await.unwrap_or_default();
-            let playlists = get_playlists_with_tracks(pool).await.unwrap_or_default();
-            (artists, albums, playlists)
-        }
+    pub async fn init_library(pool: &sqlx::SqlitePool) -> (Vec<Artist>, Vec<Album>, Vec<Playlist>) {
+        let artists = get_artists_with_tracks(pool).await.unwrap_or_default();
+        let albums = get_albums_with_tracks(pool).await.unwrap_or_default();
+        let playlists = get_playlists_with_tracks(pool).await.unwrap_or_default();
+        (artists, albums, playlists)
     }
 
     /// This will re-compute the order of any list that allows sorting and filtering
@@ -1951,6 +1824,9 @@ impl App {
             ActiveTab::Search => {
                 self.render_search(app_container[1], frame);
             }
+            ActiveTab::Settings => {
+                self.render_settings(app_container[1], frame);
+            }
         }
         if self.show_help {
             render_help_modal(
@@ -1978,7 +1854,7 @@ impl App {
 
         let is_vertical = area.width < crate::library::VERTICAL_LAYOUT_THRESHOLD;
         let labels: Vec<String> = if is_vertical {
-            ["Lib", "Alb", "Plst", "Srch"].iter().map(|s| s.to_string()).collect()
+            ["Lib", "Alb", "Plst", "Srch", "Sett"].iter().map(|s| s.to_string()).collect()
         } else {
             self.tab_labels.to_vec()
         };
@@ -1999,14 +1875,8 @@ impl App {
             status_bar.push(Span::raw("please restart").fg(Color::Red));
         }
 
-        if self.network_quality == NetworkQuality::CzechTrain {
-            status_bar
-                .push(Span::raw("slow network").fg(self.theme.resolve(&self.theme.foreground_dim)));
-        }
-        if self.client.is_none() {
-            status_bar.push(
-                Span::raw("offline").fg(self.theme.resolve(&self.theme.foreground_secondary)),
-            );
+        if self.db_updating {
+            // status already shown below
         }
 
         let updating = format!("{} Updating", &self.spinner_stages[self.spinner],);
