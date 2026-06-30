@@ -6,7 +6,6 @@ HTTP client for Jellyfin API
 
 // https://gist.github.com/nielsvanvelzen/ea047d9028f676185832e51ffaf12a6f
 
-use crate::config::AuthEntry;
 use crate::database::extension::DownloadStatus;
 use crate::helpers::Searchable;
 use crate::themes::dialoguer::DialogTheme;
@@ -26,6 +25,16 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::{client::IntoClientRequest, Message},
 };
+
+/// Cached authentication entry (kept for potential future use or migration).
+#[derive(Debug, Clone)]
+pub struct AuthEntry {
+    pub known_urls: Vec<String>,
+    pub device_id: String,
+    pub access_token: String,
+    pub user_id: String,
+    pub username: String,
+}
 
 /// This is the command that Jellyfin sends over WS for remote controls.
 #[derive(Debug, Clone)]
@@ -1734,6 +1743,9 @@ pub struct DiscographySong {
     pub download_status: DownloadStatus,
     #[serde(default)]
     pub disliked: bool,
+    /// For local files: the absolute path on disk. When set, used directly as the playback URL.
+    #[serde(default)]
+    pub file_path: String,
 }
 
 impl Searchable for DiscographySong {
@@ -1812,6 +1824,7 @@ impl<'r> FromRow<'r, sqlx::sqlite::SqliteRow> for DiscographySong {
                 .unwrap_or(DownloadStatus::NotDownloaded),
             disliked: row.get::<i32, _>("disliked") != 0,
             musicbrainz_album_id: None,
+            file_path: String::new(),
         })
     }
 }
