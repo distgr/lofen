@@ -217,8 +217,8 @@ fn key_to_ui_string(key: &KeyCombination) -> String {
     s
 }
 
-pub fn build_tab_labels(keymap: &IndexMap<KeyCombination, Action>) -> [String; 4] {
-    let names = ["Library", "Albums", "Playlists", "Search"];
+pub fn build_tab_labels(keymap: &IndexMap<KeyCombination, Action>) -> [String; 5] {
+    let names = ["Library", "Albums", "Playlists", "Search", "Settings"];
 
     std::array::from_fn(|i| {
         let action = Action::Tab((i + 1) as u8);
