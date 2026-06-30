@@ -951,7 +951,19 @@ pub async fn get_artists_with_tracks(
     let libs = selected_library_ids(pool).await; // adjust path if needed
 
     let records: Vec<(String,)> = if libs.is_empty() {
-        vec![]
+        // local mode: no Jellyfin libraries — show tracks with no library_id
+        sqlx::query_as(
+            r#"
+            SELECT DISTINCT a.artist
+            FROM artists a
+            JOIN artist_membership am ON a.id = am.artist_id
+            JOIN tracks t ON t.id = am.track_id
+            WHERE t.download_status = 'Downloaded'
+              AND t.library_id IS NULL
+            "#,
+        )
+        .fetch_all(pool)
+        .await?
     } else {
         let placeholders = vec!["?"; libs.len()].join(",");
 
@@ -989,7 +1001,18 @@ pub async fn get_albums_with_tracks(
     let libs = selected_library_ids(pool).await;
 
     let records: Vec<(String,)> = if libs.is_empty() {
-        vec![]
+        // local mode: show albums with no library_id
+        sqlx::query_as(
+            r#"
+            SELECT DISTINCT a.album
+            FROM albums a
+            JOIN tracks t ON t.album_id = a.id
+            WHERE t.download_status = 'Downloaded'
+              AND a.library_id IS NULL
+            "#,
+        )
+        .fetch_all(pool)
+        .await?
     } else {
         let placeholders = vec!["?"; libs.len()].join(",");
 
@@ -1054,10 +1077,21 @@ pub async fn get_tracks(
     search_term: &str,
 ) -> Result<Vec<DiscographySong>, Box<dyn std::error::Error>> {
     let libs = selected_library_ids(pool).await;
-    if libs.is_empty() {
-        return Ok(vec![]);
-    }
 
+    let records: Vec<(String,)> = if libs.is_empty() {
+        sqlx::query_as(
+            r#"
+            SELECT track
+            FROM tracks
+            WHERE track LIKE ?
+              AND download_status = 'Downloaded'
+              AND library_id IS NULL
+            "#,
+        )
+        .bind(format!("%{}%", search_term))
+        .fetch_all(pool)
+        .await?
+    } else {
     let placeholders = vec!["?"; libs.len()].join(",");
 
     let sql = format!(
@@ -1077,9 +1111,10 @@ pub async fn get_tracks(
         query = query.bind(lib);
     }
 
-    let rows = query.fetch_all(pool).await?;
+    query.fetch_all(pool).await?
+    };
 
-    let tracks = rows
+    let tracks = records
         .into_iter()
         .map(|(json,)| serde_json::from_str::<DiscographySong>(&json).unwrap())
         .collect();
