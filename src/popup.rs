@@ -79,7 +79,6 @@ pub enum PopupMenu {
     GlobalRoot {
         large_art: bool,
         track_based_art: bool,
-        downloading: bool,
         sleep_timer_enabled: bool,
     },
     GlobalRunScheduledTask {
@@ -325,19 +324,7 @@ impl PopupMenu {
                 PopupAction::new("Ok".to_string(), PopupCommand::Ok, Style::default(), false),
             ],
             // ---------- Global commands ---------- //
-            PopupMenu::GlobalRoot { large_art, track_based_art, downloading, .. } => vec![
-                PopupAction::new(
-                    "Synchronize with Jellyfin (runs every 10 minutes)".to_string(),
-                    PopupCommand::Refresh,
-                    Style::default(),
-                    true,
-                ),
-                PopupAction::new(
-                    "Run a Jellyfin task".to_string(),
-                    PopupCommand::RunScheduledTasks,
-                    Style::default(),
-                    true,
-                ),
+            PopupMenu::GlobalRoot { large_art, track_based_art, .. } => vec![
                 PopupAction::new(
                     "Sleep Timer".to_string(),
                     PopupCommand::SleepTimer,
@@ -369,28 +356,6 @@ impl PopupMenu {
                     PopupCommand::GlobalSetTheme,
                     Style::default(),
                     false,
-                ),
-                PopupAction::new(
-                    "Select music libraries".to_string(),
-                    PopupCommand::SelectLibraries,
-                    Style::default(),
-                    false,
-                ),
-                PopupAction::new(
-                    "Repair offline downloads (could take a minute)".to_string(),
-                    PopupCommand::OfflineRepair,
-                    Style::default(),
-                    false,
-                ),
-                PopupAction::new(
-                    "Stop downloading and abort queued".to_string(),
-                    PopupCommand::CancelDownloads,
-                    Style::default().fg(if *downloading {
-                        style::Color::Red
-                    } else {
-                        style::Color::DarkGray
-                    }),
-                    true,
                 ),
                 PopupAction::new(
                     "Reset section widths".to_string(),
@@ -1488,11 +1453,7 @@ impl crate::tui::App {
     ///
     async fn apply_global_action(&mut self, action: &PopupCommand, menu: PopupMenu) -> Option<()> {
         match menu {
-            PopupMenu::GlobalRoot { downloading, sleep_timer_enabled, .. } => match action {
-                PopupCommand::Refresh => {
-                    let _ = self.db.cmd_tx.send(Command::Update(UpdateCommand::Library)).await;
-                    self.close_popup();
-                }
+            PopupMenu::GlobalRoot { sleep_timer_enabled, .. } => match action {
                 PopupCommand::ChangeCoverArtLayout => {
                     self.preferences.large_art = !self.preferences.large_art;
                     let _ = self.preferences.save();
@@ -1522,50 +1483,6 @@ impl crate::tui::App {
                         self.popup.selected.select(Some(index));
                     } else {
                         self.popup.selected.select_last();
-                    }
-                }
-                PopupCommand::RunScheduledTasks => {
-                    let tasks = self.client.as_ref()?.scheduled_tasks().await.unwrap_or(vec![]);
-                    if tasks.is_empty() {
-                        self.set_generic_message(
-                            "No scheduled tasks",
-                            "You may not have permissions to run tasks.",
-                        );
-                        return None;
-                    }
-                    self.popup.current_menu = Some(PopupMenu::GlobalRunScheduledTask { tasks });
-                    self.popup.selected.select_first();
-                }
-                PopupCommand::SelectLibraries => {
-                    self.popup.current_menu = Some(PopupMenu::GlobalSelectLibraries {
-                        libraries: self.music_libraries.clone(),
-                    });
-                    self.popup.selected.select_first();
-                }
-                PopupCommand::OfflineRepair => {
-                    if let Ok(_) =
-                        self.db.cmd_tx.send(Command::Update(UpdateCommand::OfflineRepair)).await
-                    {
-                        self.db_updating = true;
-                        self.close_popup();
-                    } else {
-                        log::error!("Failed to start offline repair");
-                        self.set_generic_message(
-                            "Failed to start offline repair",
-                            "Please try again later.",
-                        );
-                    }
-                }
-                PopupCommand::CancelDownloads => {
-                    if !downloading {
-                        return None;
-                    }
-                    match self.db.cmd_tx.send(Command::CancelDownloads).await {
-                        Ok(_) => self.close_popup(),
-                        Err(e) => self.set_generic_message(
-                            "Failed to abort downloads",
-                            &format!("Error: {}", e.to_string()),
-                        ),
                     }
                 }
                 PopupCommand::SleepTimer => {
@@ -1673,7 +1590,7 @@ impl crate::tui::App {
                         return None;
                     } else {
                         let (original_artists, original_albums, original_playlists) =
-                            Self::init_library(&self.db.pool, self.client.is_some()).await;
+                            Self::init_library(&self.db.pool).await;
                         self.original_artists = original_artists;
                         self.original_albums = original_albums;
                         self.original_playlists = original_playlists;
@@ -2995,7 +2912,6 @@ impl crate::tui::App {
                 self.popup.current_menu = Some(PopupMenu::GlobalRoot {
                     large_art: self.preferences.large_art,
                     track_based_art: self.preferences.track_based_art,
-                    downloading: self.download_item.is_some(),
                     sleep_timer_enabled: self.sleep_timer.is_some(),
                 });
                 self.popup.selected.select_first();
