@@ -291,6 +291,7 @@ const DEFAULT_BINDINGS: &[(KeyCombination, Action)] = &[
     (key!(2), Action::Tab(2)),
     (key!(3), Action::Tab(3)),
     (key!(4), Action::Tab(4)),
+    (key!(5), Action::Tab(5)),
     // up
     (key!(k), Action::Up),
     (key!(up), Action::Up),
@@ -493,6 +494,15 @@ impl App {
             }
         }
 
+        // In Settings tab, intercept shortcut chars before the global keymap overrides them
+        if self.state.active_tab == ActiveTab::Settings && !self.settings_adding_path {
+            if let KeyCode::Char(c @ ('a' | 'd' | 's')) = key_event.code {
+                self.dirty = true;
+                self.process_settings_action(&Action::Type(c)).await;
+                return;
+            }
+        }
+
         // if inputting text, treat any Char events as text input - convert to Type(c)
         if self.locally_searching || self.popup.editing || self.searching {
             if let KeyCode::Char(c) = key_event.code {
@@ -649,6 +659,7 @@ impl App {
     }
 
     async fn set_tab(&mut self, index: u8) {
+        self.searching = false;
         match index {
             1 => {
                 self.state.active_tab = ActiveTab::Library;
@@ -3499,21 +3510,22 @@ impl App {
                 self.scan_status = Some(format!("Scanning {} path(s)...", current_paths.len()));
                 self.db_updating = true;
                 self.dirty = true;
-                let _ = status_tx.send(crate::database::database::Status::UpdateStarted).await;
                 tokio::spawn(async move {
+                    // send UpdateStarted inside the spawned task — never blocks the main loop
+                    let _ = status_tx.try_send(crate::database::database::Status::UpdateStarted);
                     match crate::scanner::scan_paths(&pool, &current_paths).await {
                         Ok(stats) => {
-                            let _ = status_tx.send(crate::database::database::Status::UpdateFinished).await;
-                            let _ = status_tx.send(crate::database::database::Status::ScanFinished {
+                            let _ = status_tx.try_send(crate::database::database::Status::UpdateFinished);
+                            let _ = status_tx.try_send(crate::database::database::Status::ScanFinished {
                                 scanned: stats.scanned,
                                 inserted: stats.inserted,
-                            }).await;
+                            });
                             log::info!("Scan finished: {} tracks added/updated", stats.inserted);
                         }
                         Err(e) => {
-                            let _ = status_tx.send(crate::database::database::Status::UpdateFailed {
+                            let _ = status_tx.try_send(crate::database::database::Status::UpdateFailed {
                                 error: e.to_string(),
-                            }).await;
+                            });
                             log::error!("Scan failed: {}", e);
                         }
                     }
