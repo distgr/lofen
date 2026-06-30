@@ -28,21 +28,25 @@ fn make_track(
 ) -> Song {
     Song {
         id: track.id.clone(),
-        url: match track.download_status {
-            DownloadStatus::Downloaded => {
-                format!(
-                    "{}",
-                    downloads_dir
-                        .join(&track.server_id)
-                        .join(&track.album_id)
-                        .join(&track.id)
-                        .to_string_lossy()
-                )
+        url: if !track.file_path.is_empty() {
+            track.file_path.clone()
+        } else {
+            match track.download_status {
+                DownloadStatus::Downloaded => {
+                    format!(
+                        "{}",
+                        downloads_dir
+                            .join(&track.server_id)
+                            .join(&track.album_id)
+                            .join(&track.id)
+                            .to_string_lossy()
+                    )
+                }
+                _ => match &client {
+                    Some(client) => client.song_url_sync(&track.id, Some(transcoding)),
+                    None => "".to_string(),
+                },
             }
-            _ => match &client {
-                Some(client) => client.song_url_sync(&track.id, Some(transcoding)),
-                None => "".to_string(),
-            },
         },
         name: track.name.clone(),
         artist: track.album_artist.clone(),
@@ -160,7 +164,7 @@ impl App {
                 Err(e) => {
                     log::error!("Failed to normalize URL '{}': {:?}", song.url, e);
 
-                    if e.to_string().contains("No such file or directory") {
+                    if self.client.is_some() && e.to_string().contains("No such file or directory") {
                         let _ = self
                             .db
                             .cmd_tx
