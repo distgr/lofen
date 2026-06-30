@@ -448,6 +448,51 @@ impl App {
         }
         // log::debug!("{:?}", crate::helpers::crokey_to_yaml(key_event));
         let combo = KeyCombination::from(key_event);
+
+        // Settings path input mode
+        if self.settings_adding_path {
+            match key_event.code {
+                KeyCode::Char(c) => {
+                    self.settings_path_input.push(c);
+                    self.dirty = true;
+                    return;
+                }
+                KeyCode::Backspace => {
+                    self.settings_path_input.pop();
+                    self.dirty = true;
+                    return;
+                }
+                KeyCode::Enter => {
+                    let path = self.settings_path_input.trim().to_string();
+                    if !path.is_empty() {
+                        let mut paths = crate::config::get_music_paths(&self.config);
+                        if !paths.contains(&path) {
+                            paths.push(path);
+                            if let Err(e) = crate::config::save_music_paths(&paths) {
+                                log::error!("Failed to save music paths: {}", e);
+                            } else {
+                                // Reload config
+                                if let Ok((_, new_config)) = crate::config::get_config() {
+                                    self.config = new_config;
+                                }
+                            }
+                        }
+                    }
+                    self.settings_path_input.clear();
+                    self.settings_adding_path = false;
+                    self.dirty = true;
+                    return;
+                }
+                KeyCode::Esc => {
+                    self.settings_path_input.clear();
+                    self.settings_adding_path = false;
+                    self.dirty = true;
+                    return;
+                }
+                _ => return,
+            }
+        }
+
         // if inputting text, treat any Char events as text input - convert to Type(c)
         if self.locally_searching || self.popup.editing || self.searching {
             if let KeyCode::Char(c) = key_event.code {
@@ -515,6 +560,11 @@ impl App {
             return;
         }
 
+        if self.state.active_tab == ActiveTab::Settings {
+            self.process_settings_action(action).await;
+            return;
+        }
+
         match action {
             Action::Quit => self.exit().await,
             Action::SearchLocally => {
@@ -552,7 +602,7 @@ impl App {
             }
             Action::Next => self.next().await,
             Action::Previous => self.previous().await,
-            Action::Tab(index) => self.set_tab(std::cmp::min(*index, 4)).await,
+            Action::Tab(index) => self.set_tab(std::cmp::min(*index, 5)).await,
             Action::PlayPause => match self.paused {
                 true => self.play().await,
                 false => self.pause().await,
@@ -621,6 +671,10 @@ impl App {
             4 => {
                 self.state.active_tab = ActiveTab::Search;
                 self.searching = true;
+            }
+            5 => {
+                self.state.active_tab = ActiveTab::Settings;
+                self.state.active_section = ActiveSection::List;
             }
             _ => {}
         }
@@ -1382,7 +1436,7 @@ impl App {
                         let prev = move_up(self.state.selected_playlist.selected());
                         self.playlist_select_by_index(prev);
                     }
-                    ActiveTab::Search => {
+                    ActiveTab::Search | ActiveTab::Settings => {
                         // handle_search_tab_events()
                     }
                 }
@@ -1483,7 +1537,7 @@ impl App {
                         self.playlist_select_by_index(next);
                         return;
                     }
-                    ActiveTab::Search => {
+                    ActiveTab::Search | ActiveTab::Settings => {
                         // handle_search_tab_events()
                     }
                 }
@@ -2481,6 +2535,7 @@ impl App {
                 self.search_term = String::from("");
                 self.state.active_tab = ActiveTab::Library;
             }
+            ActiveTab::Settings => {}
         }
     }
 
@@ -3345,6 +3400,7 @@ pub enum ActiveTab {
     Albums,
     Playlists,
     Search,
+    Settings,
 }
 
 // Music - active "section"
@@ -3366,4 +3422,104 @@ pub enum SearchSection {
     Artists,
     Albums,
     Tracks,
+}
+
+impl App {
+    pub async fn process_settings_action(&mut self, action: &Action) {
+        let paths = crate::config::get_music_paths(&self.config);
+        match action {
+            Action::Quit => self.exit().await,
+            Action::Tab(i) => self.set_tab(*i).await,
+            Action::Help => self.show_help(),
+            Action::GlobalPopup => self.request_popup(true).await,
+            Action::PlayPause => match self.paused {
+                true => self.play().await,
+                false => self.pause().await,
+            },
+            Action::Next => self.next().await,
+            Action::Previous => self.previous().await,
+            Action::Stop => self.stop().await,
+            Action::Volume(delta) => self.volume_delta(*delta).await,
+            Action::Seek(secs) => self.execute_seek(*secs).await,
+
+            // Navigate paths list
+            Action::Up => {
+                self.settings_selected_path = Some(match self.settings_selected_path {
+                    Some(i) if i > 0 => i - 1,
+                    _ => 0,
+                });
+                self.dirty = true;
+            }
+            Action::Down => {
+                let max = paths.len().saturating_sub(1);
+                self.settings_selected_path = Some(match self.settings_selected_path {
+                    Some(i) if i < max => i + 1,
+                    Some(i) => i,
+                    None => 0,
+                });
+                self.dirty = true;
+            }
+
+            // 'a' → add path
+            Action::Type('a') => {
+                self.settings_adding_path = true;
+                self.settings_path_input.clear();
+                self.dirty = true;
+            }
+            // 'd' → delete selected path
+            Action::Type('d') => {
+                if let Some(idx) = self.settings_selected_path {
+                    let mut paths = paths;
+                    if idx < paths.len() {
+                        paths.remove(idx);
+                        if let Err(e) = crate::config::save_music_paths(&paths) {
+                            log::error!("Failed to save music paths: {}", e);
+                        } else if let Ok((_, new_config)) = crate::config::get_config() {
+                            self.config = new_config;
+                        }
+                        self.settings_selected_path = if paths.is_empty() {
+                            None
+                        } else {
+                            Some(idx.saturating_sub(1))
+                        };
+                        self.dirty = true;
+                    }
+                }
+            }
+            // 's' → scan library
+            Action::Type('s') => {
+                let current_paths = crate::config::get_music_paths(&self.config);
+                if current_paths.is_empty() {
+                    self.scan_status = Some("No paths configured. Add a path first (press 'a').".to_string());
+                    self.dirty = true;
+                    return;
+                }
+                let pool = self.db.pool.clone();
+                let status_tx = self.db.status_tx.clone();
+                self.scan_status = Some(format!("Scanning {} path(s)...", current_paths.len()));
+                self.db_updating = true;
+                self.dirty = true;
+                let _ = status_tx.send(crate::database::database::Status::UpdateStarted).await;
+                tokio::spawn(async move {
+                    match crate::scanner::scan_paths(&pool, &current_paths).await {
+                        Ok(stats) => {
+                            let _ = status_tx.send(crate::database::database::Status::UpdateFinished).await;
+                            let _ = status_tx.send(crate::database::database::Status::ScanFinished {
+                                scanned: stats.scanned,
+                                inserted: stats.inserted,
+                            }).await;
+                            log::info!("Scan finished: {} tracks added/updated", stats.inserted);
+                        }
+                        Err(e) => {
+                            let _ = status_tx.send(crate::database::database::Status::UpdateFailed {
+                                error: e.to_string(),
+                            }).await;
+                            log::error!("Scan failed: {}", e);
+                        }
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
 }
