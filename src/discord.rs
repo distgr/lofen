@@ -191,7 +191,7 @@ fn resolve_musicbrainz_cover(track: &Song) -> Option<String> {
             concat!(
                 "lofen/",
                 env!("CARGO_PKG_VERSION"),
-                " ( https://github.com/dhonus/lofen )"
+                " ( https://github.com/distgr/lofen )"
             ),
         )
         .query(&[("query", &query), ("fmt", &"json".to_string()), ("limit", &"1".to_string())])
