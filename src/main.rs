@@ -69,17 +69,17 @@ async fn main() {
     if !args.contains(&String::from("--no-splash")) {
         println!(
             "
-  ⠀⠀⠀⠀⡴⠂⢩⡉⠉⠉⡖⢄⠀
-  ⠀⠀⠀⢸⠪⠄⠀⠀⠀⠀⠐⠂⢧⠀⠀⠀\x1b[94mlofen\x1b[0m
-  ⠀⠀⠀⠙⢳⣢⢬⣁⠀⠛⠀⠂⡞
-  ⠀⣀⡤⢔⠟⣌⠷⠡⢽⢭⠝⠭⠁⠀⠀⠀⠀-⠀version⠀{}
-  ⡸⣡⠴⡫⢺⠏⡇⢰⠸⠘⡄⠀⠀⠀⠀⠀⠀-⠀libmpv {}.{} ({})
-  ⡽⠁⢸⠀⢸⡀⢣⠀⢣⠱⡈⢦⠀
-  ⡇⠀⠘⣆⠀⢣⡀⣇⠈⡇⢳⠀⢣
-  ⠰⠀⠀⠘⢆⠀⠑⢸⢀⠃⠈⡇⢸
-  ⠀⠀⠀⠀⠈⠣⠀⢸⠀⠀⢠⠇⠀⠀⠀⠀This is free software (GPLv3).
-  ⠀⠀⠀⠀⠀⠀⢠⠃⠀⠔⠁⠀⠀
-  ",
+.____           _____
+|    |    _____/ ____\\____   ____
+|    |   /  _ \\   __\\/ __ \\/    \\
+|    |__(  <_> )  | \\  ___/|   |  \\
+|_______ \\____/|__|  \\___  >___|  /
+        \\/               \\/     \\/
+
+  - version {}
+  - libmpv {}.{} ({})
+  This is free software (GPLv3).
+",
             version, MPV_CLIENT_API_MAJOR, MPV_CLIENT_API_MINOR, MPV_CLIENT_API_VERSION
         );
     }
@@ -96,7 +96,7 @@ async fn main() {
         log::error!("Panic occurred: {}", info);
         log::error!("Backtrace:\n{}", bt);
         eprintln!("\n ! (×_×) panik: {}", info);
-        eprintln!(" ! If you think this is a bug, please report it at https://github.com/dhonus/lofen/issues");
+        eprintln!(" ! If you think this is a bug, please report it at https://github.com/distgr/lofen/issues");
     }));
 
     match config::prepare_directories() {
