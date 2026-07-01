@@ -160,7 +160,22 @@ pub async fn t_database<'a>(
                                         UpdateCommand::SongPlayed {
                                             track_id,
                                         } => {
-                                            let _ = sqlx::query("UPDATE tracks SET last_played = CURRENT_TIMESTAMP WHERE id = ?")
+                                            let _ = sqlx::query(
+                                                r#"
+                                                UPDATE tracks
+                                                SET last_played = CURRENT_TIMESTAMP,
+                                                    track = json_set(
+                                                        json_set(
+                                                            track,
+                                                            '$.UserData.PlayCount',
+                                                            COALESCE(json_extract(track, '$.UserData.PlayCount'), 0) + 1
+                                                        ),
+                                                        '$.UserData.Played',
+                                                        json('true')
+                                                    )
+                                                WHERE id = ?
+                                                "#,
+                                            )
                                                 .bind(&track_id)
                                                 .execute(&*pool)
                                                 .await;
@@ -469,7 +484,22 @@ async fn handle_update(
             }
         })),
         UpdateCommand::SongPlayed { track_id } => {
-            let _ = sqlx::query("UPDATE tracks SET last_played = CURRENT_TIMESTAMP WHERE id = ?")
+            let _ = sqlx::query(
+                r#"
+                UPDATE tracks
+                SET last_played = CURRENT_TIMESTAMP,
+                    track = json_set(
+                        json_set(
+                            track,
+                            '$.UserData.PlayCount',
+                            COALESCE(json_extract(track, '$.UserData.PlayCount'), 0) + 1
+                        ),
+                        '$.UserData.Played',
+                        json('true')
+                    )
+                WHERE id = ?
+                "#,
+            )
                 .bind(&track_id)
                 .execute(&*pool)
                 .await;

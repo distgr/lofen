@@ -61,6 +61,8 @@ use crokey::{Combiner, KeyCombination};
 use discord_rich_presence::activity::StatusDisplayType;
 use image::DynamicImage;
 use indexmap::IndexMap;
+use lofty::file::TaggedFileExt;
+use lofty::tag::ItemKey;
 use std::sync::atomic::Ordering;
 use std::{env, thread};
 use tokio::time::Instant;
@@ -188,6 +190,19 @@ pub struct DatabaseWrapper {
     pub status_tx: mpsc::Sender<database::database::Status>,
 }
 
+enum UiTaskResult {
+    LyricsLoaded { song_id: String, lyrics: Vec<Lyric>, time_synced: bool },
+    LyricsCleared { song_id: String },
+    CoverArtLoaded {
+        song_id: String,
+        cover_art_id: String,
+        cover_art_path: String,
+        image: DynamicImage,
+        primary_color: Option<Color>,
+    },
+    CoverArtCleared { song_id: String, cover_art_id: String },
+}
+
 pub struct App {
     pub exit: bool,
     pub dirty: bool,       // dirty flag for rendering
@@ -308,6 +323,8 @@ pub struct App {
     should_scrobble: bool,        // flag to track if we should scrobble the current song
     pub controls: Option<MediaControls>,
     pub db: DatabaseWrapper,
+    ui_task_tx: mpsc::Sender<UiTaskResult>,
+    ui_task_rx: mpsc::Receiver<UiTaskResult>,
 
     pub last_term_size: (u16, u16), // Last known terminal size used to trigger full redraw
 
@@ -351,6 +368,7 @@ impl App {
         let (sender, receiver) = channel();
         let (cmd_tx, cmd_rx) = mpsc::channel::<database::database::Command>(64);
         let (status_tx, status_rx) = mpsc::channel::<database::database::Status>(64);
+        let (ui_task_tx, ui_task_rx) = mpsc::channel::<UiTaskResult>(32);
         let (mpris_tx, mpris_rx) = channel::<MediaControlEvent>();
 
         let client: Option<Arc<Client>> = None;
@@ -596,6 +614,8 @@ impl App {
             controls,
 
             db,
+            ui_task_tx,
+            ui_task_rx,
 
             last_term_size: (0, 0),
 
@@ -1044,6 +1064,7 @@ impl App {
         self.handle_discord(false).await?;
 
         self.handle_database_events().await?;
+        self.handle_ui_task_results().await;
 
         self.process_terminal_events().await?;
 
@@ -1136,6 +1157,72 @@ impl App {
         self.update_selected_queue_item(&latest);
 
         Ok(())
+    }
+
+    async fn handle_ui_task_results(&mut self) {
+        while let Ok(result) = self.ui_task_rx.try_recv() {
+            match result {
+                UiTaskResult::LyricsLoaded { song_id, lyrics, time_synced } => {
+                    if song_id != self.active_song_id {
+                        continue;
+                    }
+                    self.mark_track_has_lyrics(&song_id, true);
+                    self.lyrics = Some((song_id, lyrics, time_synced));
+                    self.state.current_lyric = 0;
+                    if time_synced {
+                        self.state.selected_lyric.select_first();
+                    } else {
+                        self.state.selected_lyric.select(None);
+                    }
+                }
+                UiTaskResult::LyricsCleared { song_id } => {
+                    if song_id != self.active_song_id {
+                        continue;
+                    }
+                    self.lyrics = None;
+                    self.state.current_lyric = 0;
+                    self.state.selected_lyric.select(None);
+                    if self.state.active_section == ActiveSection::Lyrics {
+                        let fallback = match self.state.last_section {
+                            ActiveSection::Tracks => ActiveSection::Tracks,
+                            ActiveSection::List => ActiveSection::List,
+                            ActiveSection::Queue => ActiveSection::Queue,
+                            _ => ActiveSection::Queue,
+                        };
+                        self.state.active_section = fallback;
+                    }
+                }
+                UiTaskResult::CoverArtLoaded {
+                    song_id,
+                    cover_art_id,
+                    cover_art_path,
+                    image,
+                    primary_color,
+                } => {
+                    if song_id != self.active_song_id || cover_art_id != self.previous_song_parent_id
+                    {
+                        continue;
+                    }
+                    self.set_cover_art_protocol(image, &cover_art_path);
+                    if self.auto_color {
+                        if let Some(color) = primary_color {
+                            self.theme.set_primary_color(color);
+                        } else {
+                            self.theme.primary_color = self.theme.resolve(&self.theme.accent);
+                        }
+                    }
+                }
+                UiTaskResult::CoverArtCleared { song_id, cover_art_id } => {
+                    if song_id != self.active_song_id || cover_art_id != self.previous_song_parent_id
+                    {
+                        continue;
+                    }
+                    self.cover_art = None;
+                    self.cover_art_path.clear();
+                }
+            }
+            self.dirty = true;
+        }
     }
 
     async fn update_playback_state(&mut self, state: &MpvPlaybackState) {
@@ -1374,6 +1461,17 @@ impl App {
         let song_changed = song.id != self.active_song_id || self.song_changed;
         let should_scrobble = (self.should_scrobble || song_changed) && !self.paused;
 
+        // Repeat-one restarts the same track without going through handle_song_change(),
+        // so count that replay here when we detect a natural wrap from end -> beginning.
+        if self.should_scrobble && !song_changed && !self.paused {
+            let _ = self
+                .db
+                .cmd_tx
+                .send(Command::Update(UpdateCommand::SongPlayed { track_id: song.id.clone() }))
+                .await;
+            self.increment_track_play_count(&song.id);
+        }
+
         if should_scrobble && self.client.is_some() {
             self.should_scrobble = false;
 
@@ -1452,6 +1550,9 @@ impl App {
         self.song_changed = false;
         self.active_song_id = song.id.clone();
         self.state.selected_lyric_manual_override = false;
+        self.lyrics = None;
+        self.state.current_lyric = 0;
+        self.state.selected_lyric.select(None);
 
         self.set_lyrics().await?;
         let _ = self
@@ -1479,17 +1580,6 @@ impl App {
 
         self.update_cover_art(song, false, false).await;
 
-        let has_lyrics = self.lyrics.as_ref().is_some_and(|(_, l, _)| !l.is_empty());
-        if self.state.active_section == ActiveSection::Lyrics && !has_lyrics {
-            let fallback = match self.state.last_section {
-                ActiveSection::Tracks => ActiveSection::Tracks,
-                ActiveSection::List => ActiveSection::List,
-                ActiveSection::Queue => ActiveSection::Queue,
-                _ => ActiveSection::Queue,
-            };
-            self.state.active_section = fallback;
-        }
-
         let _ = self.set_window_title(Some(song));
 
         if self.preferences.repeat == Repeat::Radio
@@ -1513,6 +1603,19 @@ impl App {
         bump(&mut self.album_tracks, track_id);
         bump(&mut self.playlist_tracks, track_id);
         bump(&mut self.search_result_tracks, track_id);
+    }
+
+    fn mark_track_has_lyrics(&mut self, track_id: &str, has_lyrics: bool) {
+        fn mark(tracks: &mut [DiscographySong], track_id: &str, has_lyrics: bool) {
+            for track in tracks.iter_mut().filter(|t| t.id == track_id) {
+                track.has_lyrics = has_lyrics;
+            }
+        }
+
+        mark(&mut self.tracks, track_id, has_lyrics);
+        mark(&mut self.album_tracks, track_id, has_lyrics);
+        mark(&mut self.playlist_tracks, track_id, has_lyrics);
+        mark(&mut self.search_result_tracks, track_id, has_lyrics);
     }
 
     pub async fn handle_discord(&mut self, force: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -1618,34 +1721,39 @@ impl App {
         if self.active_song_id.is_empty() {
             return Ok(());
         }
+        let song_id = self.active_song_id.clone();
+        let pool = Arc::clone(&self.db.pool);
+        let client = self.client.clone();
+        let tx = self.ui_task_tx.clone();
 
-        let maybe_lyrics = if let Some(client) = self.client.as_mut() {
-            client.lyrics(&self.active_song_id).await.ok()
-        } else {
-            None
-        };
+        tokio::spawn(async move {
+            let maybe_lyrics = if let Some(client) = client {
+                client.lyrics(&song_id).await.ok()
+            } else {
+                None
+            };
 
-        let lyrics = if let Some(lyrics) = maybe_lyrics {
-            let _ = insert_lyrics(&self.db.pool, &self.active_song_id, &lyrics).await;
-            lyrics
-        } else {
-            match get_lyrics(&self.db.pool, &self.active_song_id).await {
-                Ok(l) => l,
-                Err(_) => return Ok(()),
-            }
-        };
+            let lyrics = if let Some(lyrics) = maybe_lyrics {
+                let _ = insert_lyrics(&pool, &song_id, &lyrics).await;
+                Some(lyrics)
+            } else {
+                match get_lyrics(&pool, &song_id).await.ok() {
+                    some @ Some(_) => some,
+                    None => Self::load_local_embedded_lyrics(&pool, &song_id).await,
+                }
+            };
 
-        let time_synced = lyrics.iter().all(|l| l.start != 0);
-        self.lyrics = Some((self.active_song_id.clone(), lyrics, time_synced));
+            let result = match lyrics {
+                Some(lyrics) => UiTaskResult::LyricsLoaded {
+                    song_id,
+                    time_synced: lyrics.iter().all(|l| l.start != 0),
+                    lyrics,
+                },
+                None => UiTaskResult::LyricsCleared { song_id },
+            };
 
-        self.state.current_lyric = 0;
-
-        if time_synced {
-            self.state.selected_lyric.select_first();
-        } else {
-            self.state.selected_lyric.select(None);
-        }
-
+            let _ = tx.send(result).await;
+        });
         Ok(())
     }
 
@@ -1653,43 +1761,71 @@ impl App {
     /// force - whether to force update the cover art
     /// second_attempt - whether this was called after attempting to fetch the cover art in the background
     pub async fn update_cover_art(&mut self, song: &Song, force: bool, second_attempt: bool) {
-        // When track_based_art is on, each track has its own art, so compare by song ID.
-        // Otherwise, all tracks in an album share art, so comparing by album ID avoids
-        // redundant reloads when consecutive tracks are from the same album.
         let cover_art_id =
             if self.preferences.track_based_art { song.id.clone() } else { song.album_id.clone() };
-        if force || self.previous_song_parent_id != cover_art_id || self.cover_art.is_none() {
-            self.previous_song_parent_id = cover_art_id;
-
-            match self.get_cover_art(song, second_attempt).await {
-                Ok(cover_image) => {
-                    let p = format!("{}/{}", self.cover_art_dir, cover_image);
-
-                    if let Ok(reader) = image::ImageReader::open(&p) {
-                        if let Ok(img) = reader.decode() {
-                            self.set_cover_art_protocol(img, &p);
-                            self.grab_primary_color(&p);
-                        } else {
-                            self.theme.primary_color = self.theme.resolve(&self.theme.accent);
-                        }
-                    }
-                }
-                Err(_) => {
-                    if second_attempt {
-                        self.cover_art = None;
-                        self.cover_art_path.clear();
-                    }
-                }
-            }
+        if !force && self.previous_song_parent_id == cover_art_id && self.cover_art.is_some() {
+            return;
         }
+        self.previous_song_parent_id = cover_art_id.clone();
+
+        let song = song.clone();
+        let tx = self.ui_task_tx.clone();
+        let cmd_tx = self.db.cmd_tx.clone();
+        let pool = Arc::clone(&self.db.pool);
+        let cover_art_dir = self.cover_art_dir.clone();
+        let track_based_art = self.preferences.track_based_art;
+        let online = self.client.is_some();
+        let auto_color = self.auto_color;
+
+        tokio::spawn(async move {
+            match Self::load_cover_art_asset(
+                song.clone(),
+                track_based_art,
+                online,
+                second_attempt,
+                cmd_tx,
+                pool,
+                cover_art_dir,
+                auto_color,
+            )
+            .await
+            {
+                Ok((cover_art_id, cover_art_path, image, primary_color)) => {
+                    let _ = tx
+                        .send(UiTaskResult::CoverArtLoaded {
+                            song_id: song.id,
+                            cover_art_id,
+                            cover_art_path,
+                            image,
+                            primary_color,
+                        })
+                        .await;
+                }
+                Err(_) if second_attempt => {
+                    let _ = tx
+                        .send(UiTaskResult::CoverArtCleared {
+                            song_id: song.id,
+                            cover_art_id,
+                        })
+                        .await;
+                }
+                Err(_) => {}
+            }
+        });
     }
 
     // called on terminal size change to fit the cover art again
     pub async fn refresh_cover_art(&mut self) {
         if let Some(cover_path) = self.cover_art_path.clone().into() {
-            if let Ok(reader) = image::ImageReader::open(&cover_path) {
-                if let Ok(img) = reader.decode() {
-                    self.set_cover_art_protocol(img, &cover_path);
+            let cover_path_clone = cover_path.clone();
+            if let Ok((img, primary_color)) =
+                Self::decode_cover_art(PathBuf::from(&cover_path_clone), self.auto_color).await
+            {
+                self.set_cover_art_protocol(img, &cover_path);
+                if self.auto_color {
+                    if let Some(color) = primary_color {
+                        self.theme.set_primary_color(color);
+                    }
                 }
             }
         }
@@ -2156,75 +2292,67 @@ impl App {
             .send(Command::Update(UpdateCommand::Playlist { playlist_id: playlist.id.clone() }))
             .await;
     }
-    async fn get_cover_art(
-        &mut self,
-        song: &Song,
+    async fn load_cover_art_asset(
+        song: Song,
+        track_based_art: bool,
+        online: bool,
         second_attempt: bool,
-    ) -> std::result::Result<String, Box<dyn std::error::Error>> {
+        cmd_tx: mpsc::Sender<database::database::Command>,
+        pool: Arc<Pool<Sqlite>>,
+        cover_art_dir: String,
+        auto_color: bool,
+    ) -> Result<(String, String, DynamicImage, Option<Color>), Box<dyn std::error::Error + Send + Sync>>
+    {
         if song.album_id.is_empty() {
             return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Album ID is empty",
             )));
         }
-        let data_dir = data_dir().unwrap();
-        let cover_dir = data_dir.join("lofen").join("covers");
+        let cover_dir = PathBuf::from(&cover_art_dir);
 
-        // When track_based_art is on, prefer the song's own image; fall back to the album image.
-        // When track_based_art is off, only look for the album image (no fallback needed).
         let preferred_id =
-            if self.preferences.track_based_art { song.id.clone() } else { song.album_id.clone() };
-        let secondary_id =
-            if self.preferences.track_based_art { Some(song.album_id.clone()) } else { None };
+            if track_based_art { song.id.clone() } else { song.album_id.clone() };
+        let secondary_id = if track_based_art { Some(song.album_id.clone()) } else { None };
 
-        // Helper: scan the covers dir for a valid cached file matching the given ID.
-        let find_cached = |id: &str| -> Option<String> {
-            let Ok(files) = std::fs::read_dir(&cover_dir) else { return None };
-            for file in files.flatten() {
-                let file_name = file.file_name().to_string_lossy().to_string();
-                if file_name.contains(id) {
-                    let path = cover_dir.join(&file_name);
-                    if let Ok(reader) = image::ImageReader::open(&path) {
-                        if reader.decode().is_ok() {
-                            return Some(file_name);
-                        } else {
-                            log::warn!("Cached cover art for {} was invalid, removing…", id);
-                            let _ = std::fs::remove_file(&path);
-                        }
-                    }
-                }
-            }
-            None
-        };
-
-        // 1. Preferred image available → use it directly.
-        if let Some(file_name) = find_cached(&preferred_id) {
-            return Ok(file_name);
+        if let Some(path) = Self::find_cached_cover_path(&cover_dir, &preferred_id) {
+            let (image, primary_color) = Self::decode_cover_art(path.clone(), auto_color).await?;
+            return Ok((
+                preferred_id,
+                path.to_string_lossy().into_owned(),
+                image,
+                primary_color,
+            ));
         }
 
-        // 2. Secondary (album) image available → show it immediately while the preferred
-        //    image downloads in the background.
         if let Some(ref secondary) = secondary_id {
-            if let Some(file_name) = find_cached(secondary) {
+            if let Some(path) = Self::find_cached_cover_path(&cover_dir, secondary) {
                 if !second_attempt {
-                    let _ = self
-                        .db
-                        .cmd_tx
+                    let _ = cmd_tx
                         .send(Command::Download(DownloadCommand::CoverArt {
-                            item_id: preferred_id,
+                            item_id: preferred_id.clone(),
                         }))
                         .await;
                 }
-                return Ok(file_name);
+                let (image, primary_color) = Self::decode_cover_art(path.clone(), auto_color).await?;
+                return Ok((
+                    preferred_id,
+                    path.to_string_lossy().into_owned(),
+                    image,
+                    primary_color,
+                ));
             }
         }
 
-        // 3. In local mode (no client), try to extract cover from the audio file itself.
-        if self.client.is_none() {
-            if let Some(file_name) =
-                self.extract_cover_from_audio(&preferred_id, &cover_dir).await
-            {
-                return Ok(file_name);
+        if !online {
+            if let Some(path) = Self::extract_cover_from_audio(&pool, &preferred_id, &cover_dir).await {
+                let (image, primary_color) = Self::decode_cover_art(path.clone(), auto_color).await?;
+                return Ok((
+                    preferred_id,
+                    path.to_string_lossy().into_owned(),
+                    image,
+                    primary_color,
+                ));
             }
             return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -2232,28 +2360,38 @@ impl App {
             )));
         }
 
-        // 4. Online mode: trigger download of the preferred image and wait for it.
         if !second_attempt {
-            let _ = self
-                .db
-                .cmd_tx
-                .send(Command::Download(DownloadCommand::CoverArt { item_id: preferred_id }))
+            let _ = cmd_tx
+                .send(Command::Download(DownloadCommand::CoverArt {
+                    item_id: preferred_id.clone(),
+                }))
                 .await;
         }
 
         Err(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Artwork not found")))
     }
 
+    fn find_cached_cover_path(covers_dir: &std::path::Path, id: &str) -> Option<PathBuf> {
+        let files = std::fs::read_dir(covers_dir).ok()?;
+        for file in files.flatten() {
+            let file_name = file.file_name().to_string_lossy().to_string();
+            if file_name == id || file_name.starts_with(&format!("{id}.")) {
+                return Some(file.path());
+            }
+        }
+        None
+    }
+
     async fn extract_cover_from_audio(
-        &self,
+        pool: &Arc<Pool<Sqlite>>,
         album_id: &str,
         covers_dir: &std::path::Path,
-    ) -> Option<String> {
+    ) -> Option<PathBuf> {
         let row: Option<(String,)> = sqlx::query_as(
             r#"SELECT track FROM tracks WHERE album_id = ? AND download_status = 'Downloaded' LIMIT 1"#,
         )
         .bind(album_id)
-        .fetch_optional(&*self.db.pool)
+        .fetch_optional(&**pool)
         .await
         .ok()
         .flatten();
@@ -2287,16 +2425,157 @@ impl App {
             let dest = covers_dir.join(&file_name);
             std::fs::write(&dest, pic.data()).ok()?;
             log::info!("Cover art extracted on-the-fly → {}", dest.display());
-            Some(file_name)
+            Some(dest)
         })
         .await
         .ok()
         .flatten()
     }
 
+    async fn decode_cover_art(
+        path: PathBuf,
+        auto_color: bool,
+    ) -> Result<(DynamicImage, Option<Color>), Box<dyn std::error::Error + Send + Sync>> {
+        tokio::task::spawn_blocking(move || {
+            let reader = image::ImageReader::open(&path)?;
+            let img = reader.decode()?;
+            let primary_color = if auto_color {
+                Self::compute_primary_color_from_image(&img)
+            } else {
+                None
+            };
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>((img, primary_color))
+        })
+        .await?
+    }
+
+    async fn load_local_embedded_lyrics(
+        pool: &Arc<Pool<Sqlite>>,
+        song_id: &str,
+    ) -> Option<Vec<Lyric>> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT track FROM tracks WHERE id = ?").bind(song_id).fetch_optional(&**pool).await.ok()?;
+
+        let file_path = row.and_then(|(json,)| {
+            serde_json::from_str::<serde_json::Value>(&json)
+                .ok()
+                .and_then(|v| v.get("file_path").and_then(|p| p.as_str()).map(|s| s.to_string()))
+                .filter(|s| !s.is_empty())
+        })?;
+
+        let parsed = tokio::task::spawn_blocking(move || Self::read_embedded_lrc_from_file(&file_path))
+            .await
+            .ok()
+            .flatten()?;
+
+        let _ = insert_lyrics(pool, song_id, &parsed).await;
+        let _ = sqlx::query(
+            r#"UPDATE tracks SET track = json_set(track, '$.HasLyrics', json('true')) WHERE id = ?"#,
+        )
+        .bind(song_id)
+        .execute(&**pool)
+        .await;
+        Some(parsed)
+    }
+
+    fn read_embedded_lrc_from_file(file_path: &str) -> Option<Vec<Lyric>> {
+        let tagged = lofty::read_from_path(file_path).ok()?;
+        let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
+        let raw = tag.get_string(&ItemKey::Lyrics)?.trim().to_string();
+
+        Self::parse_lrc_text(&raw)
+    }
+
+    fn parse_lrc_text(raw: &str) -> Option<Vec<Lyric>> {
+        let mut lyrics = Vec::new();
+
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let mut rest = trimmed;
+            let mut timestamps = Vec::new();
+            while let Some(after_open) = rest.strip_prefix('[') {
+                let Some(close_idx) = after_open.find(']') else {
+                    break;
+                };
+                let ts = &after_open[..close_idx];
+                let remainder = &after_open[close_idx + 1..];
+                let Some(start) = Self::parse_lrc_timestamp(ts) else {
+                    break;
+                };
+                timestamps.push(start);
+                rest = remainder;
+            }
+
+            if timestamps.is_empty() {
+                continue;
+            }
+
+            let text = rest.trim();
+            if text.is_empty() {
+                continue;
+            }
+
+            for start in timestamps {
+                lyrics.push(Lyric { text: text.to_string(), start });
+            }
+        }
+
+        if lyrics.is_empty() {
+            None
+        } else {
+            lyrics.sort_by_key(|l| l.start);
+            Some(lyrics)
+        }
+    }
+
+    fn parse_lrc_timestamp(ts: &str) -> Option<u64> {
+        let mut parts = ts.split(':');
+        let minutes = parts.next()?.parse::<u64>().ok()?;
+        let seconds_part = parts.next()?;
+        if parts.next().is_some() {
+            return None;
+        }
+
+        let mut sec_parts = seconds_part.split('.');
+        let seconds = sec_parts.next()?.parse::<u64>().ok()?;
+        let fraction = sec_parts.next().unwrap_or("0");
+        if sec_parts.next().is_some() {
+            return None;
+        }
+
+        let scale = match fraction.len() {
+            0 => 0,
+            1 => fraction.parse::<u64>().ok()? * 100,
+            2 => fraction.parse::<u64>().ok()? * 10,
+            _ => fraction[..3.min(fraction.len())].parse::<u64>().ok()?,
+        };
+
+        Some((minutes * 60 + seconds) * 10_000_000 + scale * 10_000)
+    }
+
     pub fn get_image_buffer(img: image::DynamicImage) -> (Vec<u8>, color_thief::ColorFormat) {
         let rgba = img.to_rgba8();
         (rgba.to_vec(), color_thief::ColorFormat::Rgba)
+    }
+
+    fn compute_primary_color_from_image(img: &DynamicImage) -> Option<Color> {
+        let (img_buffer, color_format) = Self::get_image_buffer(img.clone());
+        let color = color_thief::get_palette(&img_buffer, color_format, 5, 5).ok()?.first().copied()?;
+        let mut r = color.r;
+        let mut g = color.g;
+        let mut b = color.b;
+
+        if color.r.saturating_add(color.g).saturating_add(color.b) < 60 {
+            r = r.saturating_add(30);
+            g = g.saturating_add(30);
+            b = b.saturating_add(30);
+        }
+
+        Some(Color::Rgb(r, g, b))
     }
 
     fn grab_primary_color(&mut self, p: &str) {
