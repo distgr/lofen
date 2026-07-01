@@ -660,6 +660,11 @@ impl App {
 
     async fn set_tab(&mut self, index: u8) {
         self.searching = false;
+        let previous_tab = self.state.active_tab;
+        let previous_renders_art = matches!(
+            previous_tab,
+            ActiveTab::Library | ActiveTab::Albums | ActiveTab::Playlists
+        );
         match index {
             1 => {
                 self.state.active_tab = ActiveTab::Library;
@@ -688,6 +693,29 @@ impl App {
                 self.state.active_section = ActiveSection::List;
             }
             _ => {}
+        }
+
+        if self.state.active_tab != previous_tab {
+            let current_renders_art = matches!(
+                self.state.active_tab,
+                ActiveTab::Library | ActiveTab::Albums | ActiveTab::Playlists
+            );
+
+            if !previous_renders_art && current_renders_art && self.cover_art.is_none() {
+                if !self.cover_art_path.is_empty() {
+                    self.refresh_cover_art().await;
+                } else if let Some(current_song) = self
+                    .state
+                    .queue
+                    .get(self.state.current_playback_state.current_index)
+                    .cloned()
+                {
+                    self.update_cover_art(&current_song, true, false).await;
+                }
+            }
+
+            self.dirty_clear = previous_renders_art != current_renders_art;
+            self.dirty = true;
         }
     }
 

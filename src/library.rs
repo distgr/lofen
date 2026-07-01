@@ -192,7 +192,7 @@ impl App {
                     .border_style(self.theme.resolve(&self.theme.border));
 
                 let chunk_area = block.inner(outer_area);
-                let img_area = cover_art.size_for(Resize::Scale(None), chunk_area);
+                let img_area = cover_art.size_for(Resize::Fit(None), chunk_area);
 
                 let block_total_height = img_area.height + 2;
                 let top_height = outer_area.height.saturating_sub(block_total_height);
@@ -208,15 +208,16 @@ impl App {
                 frame.render_widget(block, layout[1]);
 
                 let inner_area = layout[1].inner(Margin { vertical: 1, horizontal: 1 });
+                frame.render_widget(Clear, inner_area);
 
                 let final_centered = Rect {
-                    x: inner_area.x + (inner_area.width.saturating_sub(img_area.width)) / 2,
-                    y: inner_area.y + (inner_area.height.saturating_sub(img_area.height)) / 2,
-                    width: img_area.width,
-                    height: img_area.height,
+                    x: inner_area.x + (inner_area.width.saturating_sub(img_area.width.min(inner_area.width))) / 2,
+                    y: inner_area.y + (inner_area.height.saturating_sub(img_area.height.min(inner_area.height))) / 2,
+                    width: img_area.width.min(inner_area.width),
+                    height: img_area.height.min(inner_area.height),
                 };
 
-                let image = StatefulImage::default().resize(Resize::Scale(None));
+                let image = StatefulImage::default().resize(Resize::Fit(None));
                 frame.render_stateful_widget(image, final_centered, cover_art);
 
                 layout
@@ -1755,7 +1756,8 @@ impl App {
         };
 
         if self.cover_art.is_some() && !large_art {
-            let image = StatefulImage::default();
+            let image = StatefulImage::default().resize(Resize::Fit(None));
+            frame.render_widget(Clear, bottom_split[1]);
             frame.render_stateful_widget(image, bottom_split[1], self.cover_art.as_mut().unwrap());
         }
 

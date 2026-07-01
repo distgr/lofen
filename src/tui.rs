@@ -59,6 +59,7 @@ use std::sync::Arc;
 use crokey::{Combiner, KeyCombination};
 
 use discord_rich_presence::activity::StatusDisplayType;
+use image::DynamicImage;
 use indexmap::IndexMap;
 use std::sync::atomic::Ordering;
 use std::{env, thread};
@@ -627,13 +628,9 @@ impl App {
     ) -> (Color, Option<Picker>) {
         let is_art_enabled = config.get("art").and_then(|a| a.as_bool()).unwrap_or(true);
         let picker = if is_art_enabled {
-            match Picker::from_query_stdio() {
-                Ok(picker) => Some(picker),
-                Err(_) => {
-                    let picker = Picker::halfblocks();
-                    Some(picker)
-                }
-            }
+            // Force the cell-based renderer. Terminal image protocols were causing
+            // persistent artifacts and overflow when switching tabs.
+            Some(Picker::halfblocks())
         } else {
             None
         };
@@ -1462,6 +1459,7 @@ impl App {
             .cmd_tx
             .send(Command::Update(UpdateCommand::SongPlayed { track_id: song.id.clone() }))
             .await;
+        self.increment_track_play_count(&song.id);
 
         if let Some((discord_tx, .., art_mode, status_display_type)) = &mut self.discord {
             let playback = &self.state.current_playback_state;
@@ -1501,6 +1499,20 @@ impl App {
         }
 
         Ok(())
+    }
+
+    fn increment_track_play_count(&mut self, track_id: &str) {
+        fn bump(tracks: &mut [DiscographySong], track_id: &str) {
+            for track in tracks.iter_mut().filter(|t| t.id == track_id) {
+                track.user_data.play_count = track.user_data.play_count.saturating_add(1);
+                track.user_data.played = true;
+            }
+        }
+
+        bump(&mut self.tracks, track_id);
+        bump(&mut self.album_tracks, track_id);
+        bump(&mut self.playlist_tracks, track_id);
+        bump(&mut self.search_result_tracks, track_id);
     }
 
     pub async fn handle_discord(&mut self, force: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -1655,11 +1667,7 @@ impl App {
 
                     if let Ok(reader) = image::ImageReader::open(&p) {
                         if let Ok(img) = reader.decode() {
-                            if let Some(picker) = &mut self.picker {
-                                let image_fit_state = picker.new_resize_protocol(img.clone());
-                                self.cover_art = Some(image_fit_state);
-                                self.cover_art_path = p.clone();
-                            }
+                            self.set_cover_art_protocol(img, &p);
                             self.grab_primary_color(&p);
                         } else {
                             self.theme.primary_color = self.theme.resolve(&self.theme.accent);
@@ -1681,13 +1689,22 @@ impl App {
         if let Some(cover_path) = self.cover_art_path.clone().into() {
             if let Ok(reader) = image::ImageReader::open(&cover_path) {
                 if let Ok(img) = reader.decode() {
-                    if let Some(picker) = &mut self.picker {
-                        let image_fit_state = picker.new_resize_protocol(img.clone());
-                        self.cover_art = Some(image_fit_state);
-                    }
+                    self.set_cover_art_protocol(img, &cover_path);
                 }
             }
         }
+    }
+
+    fn set_cover_art_protocol(&mut self, img: DynamicImage, cover_path: &str) {
+        let prepared = self.prepare_cover_art_image(img);
+        if let Some(picker) = &mut self.picker {
+            self.cover_art = Some(picker.new_resize_protocol(prepared));
+            self.cover_art_path = cover_path.to_string();
+        }
+    }
+
+    fn prepare_cover_art_image(&self, img: DynamicImage) -> DynamicImage {
+        img
     }
 
     pub fn set_window_title(&self, song: Option<&Song>) -> std::io::Result<()> {
