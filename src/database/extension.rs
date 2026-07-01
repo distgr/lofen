@@ -740,26 +740,37 @@ pub async fn get_discography(
 ) -> Result<Vec<DiscographySong>, Box<dyn std::error::Error>> {
     let libs = selected_library_ids(pool).await;
 
-    if libs.is_empty() {
-        return Ok(vec![]);
-    }
-
-    let placeholders = vec!["?"; libs.len()].join(",");
-
-    let base_sql = if client.is_some() {
-        format!(
+    let records: Vec<(String, String, i64)> = if libs.is_empty() {
+        sqlx::query_as(
             r#"
+            SELECT t.track, t.download_status, t.disliked
+            FROM tracks t
+            JOIN artist_membership am ON t.id = am.track_id
+            WHERE am.artist_id = ?
+              AND t.download_status = 'Downloaded'
+              AND t.library_id IS NULL
+            "#,
+        )
+        .bind(artist_id)
+        .fetch_all(pool)
+        .await?
+    } else {
+        let placeholders = vec!["?"; libs.len()].join(",");
+
+        let base_sql = if client.is_some() {
+            format!(
+                r#"
             SELECT t.track, t.download_status, t.disliked
             FROM tracks t
             JOIN artist_membership am ON t.id = am.track_id
             WHERE am.artist_id = ?
               AND t.library_id IN ({})
             "#,
-            placeholders
-        )
-    } else {
-        format!(
-            r#"
+                placeholders
+            )
+        } else {
+            format!(
+                r#"
             SELECT t.track, t.download_status, t.disliked
             FROM tracks t
             JOIN artist_membership am ON t.id = am.track_id
@@ -767,17 +778,16 @@ pub async fn get_discography(
               AND t.download_status = 'Downloaded'
               AND t.library_id IN ({})
             "#,
-            placeholders
-        )
+                placeholders
+            )
+        };
+
+        let mut q = sqlx::query_as::<_, (String, String, i64)>(&base_sql).bind(artist_id);
+        for lib in libs {
+            q = q.bind(lib);
+        }
+        q.fetch_all(pool).await?
     };
-
-    let mut q = sqlx::query_as::<_, (String, String, i64)>(&base_sql).bind(artist_id);
-
-    for lib in libs {
-        q = q.bind(lib);
-    }
-
-    let records = q.fetch_all(pool).await?;
 
     let mut tracks = Vec::new();
     for (json_str, download_status, disliked) in records {
