@@ -488,7 +488,7 @@ impl App {
 
         // adjust index if selection was after the removed queue block
         if after {
-            index -= queue_len;
+            index = index.saturating_sub(queue_len);
         }
         self.state.selected_queue_item.select(Some(index));
 
