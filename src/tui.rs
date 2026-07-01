@@ -1617,7 +1617,10 @@ impl App {
             let _ = insert_lyrics(&self.db.pool, &self.active_song_id, &lyrics).await;
             lyrics
         } else {
-            get_lyrics(&self.db.pool, &self.active_song_id).await?
+            match get_lyrics(&self.db.pool, &self.active_song_id).await {
+                Ok(l) => l,
+                Err(_) => return Ok(()),
+            }
         };
 
         let time_synced = lyrics.iter().all(|l| l.start != 0);
@@ -2199,7 +2202,20 @@ impl App {
             }
         }
 
-        // 3. Nothing cached → trigger download of the preferred image and wait for it.
+        // 3. In local mode (no client), try to extract cover from the audio file itself.
+        if self.client.is_none() {
+            if let Some(file_name) =
+                self.extract_cover_from_audio(&preferred_id, &cover_dir).await
+            {
+                return Ok(file_name);
+            }
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Artwork not found",
+            )));
+        }
+
+        // 4. Online mode: trigger download of the preferred image and wait for it.
         if !second_attempt {
             let _ = self
                 .db
@@ -2209,6 +2225,56 @@ impl App {
         }
 
         Err(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Artwork not found")))
+    }
+
+    async fn extract_cover_from_audio(
+        &self,
+        album_id: &str,
+        covers_dir: &std::path::Path,
+    ) -> Option<String> {
+        let row: Option<(String,)> = sqlx::query_as(
+            r#"SELECT track FROM tracks WHERE album_id = ? AND download_status = 'Downloaded' LIMIT 1"#,
+        )
+        .bind(album_id)
+        .fetch_optional(&*self.db.pool)
+        .await
+        .ok()
+        .flatten();
+
+        let file_path = row.and_then(|(json,)| {
+            serde_json::from_str::<serde_json::Value>(&json)
+                .ok()
+                .and_then(|v| v.get("file_path").and_then(|p| p.as_str()).map(|s| s.to_string()))
+                .filter(|s| !s.is_empty())
+        })?;
+
+        let album_id = album_id.to_string();
+        let covers_dir = covers_dir.to_path_buf();
+        let file_path_clone = file_path.clone();
+
+        tokio::task::spawn_blocking(move || {
+            use lofty::file::TaggedFileExt;
+            use lofty::picture::PictureType;
+
+            let tagged = lofty::read_from_path(&file_path_clone).ok()?;
+            let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
+
+            let pictures = tag.pictures();
+            let pic = pictures
+                .iter()
+                .find(|p| p.pic_type() == PictureType::CoverFront)
+                .or_else(|| pictures.first())?;
+
+            let ext = pic.mime_type().and_then(|m| m.ext()).unwrap_or("jpg");
+            let file_name = format!("{}.{}", album_id, ext);
+            let dest = covers_dir.join(&file_name);
+            std::fs::write(&dest, pic.data()).ok()?;
+            log::info!("Cover art extracted on-the-fly → {}", dest.display());
+            Some(file_name)
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     pub fn get_image_buffer(img: image::DynamicImage) -> (Vec<u8>, color_thief::ColorFormat) {

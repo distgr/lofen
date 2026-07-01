@@ -1457,6 +1457,9 @@ impl crate::tui::App {
                 PopupCommand::ChangeCoverArtLayout => {
                     self.preferences.large_art = !self.preferences.large_art;
                     let _ = self.preferences.save();
+                    self.cover_art = None;
+                    self.dirty_clear = true;
+                    self.refresh_cover_art().await;
                     self.close_popup();
                 }
                 PopupCommand::ToggleSongCoverArt => {

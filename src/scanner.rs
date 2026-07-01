@@ -1,8 +1,9 @@
 use lofty::file::{AudioFile, TaggedFileExt};
+use lofty::picture::PictureType;
 use lofty::tag::Accessor;
 use sqlx::{Pool, Sqlite};
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use walkdir::WalkDir;
 
@@ -55,12 +56,16 @@ pub async fn scan_paths(
     paths: &[String],
 ) -> Result<ScanStats, Box<dyn std::error::Error + Send + Sync>> {
     let paths_owned: Vec<String> = paths.to_vec();
+    let covers_dir = dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("lofen")
+        .join("covers");
 
     log::info!("Scanner: starting file collection for {} paths", paths_owned.len());
 
-    // Run all blocking I/O (walkdir + lofty) on a thread-pool thread
+    // Run all blocking I/O (walkdir + lofty + cover extraction) on a thread-pool thread
     let track_infos = tokio::task::spawn_blocking(move || {
-        collect_track_infos(&paths_owned)
+        collect_track_infos(&paths_owned, &covers_dir)
     })
     .await??;
 
@@ -200,9 +205,54 @@ pub async fn scan_paths(
     Ok(ScanStats { scanned, inserted, errors })
 }
 
+fn extract_cover(
+    tagged: &lofty::file::TaggedFile,
+    album_key: &str,
+    covers_dir: &Path,
+    seen: &mut HashSet<String>,
+) {
+    if seen.contains(album_key) {
+        return;
+    }
+    seen.insert(album_key.to_string());
+
+    let tag = match tagged.primary_tag().or_else(|| tagged.first_tag()) {
+        Some(t) => t,
+        None => return,
+    };
+
+    let pictures = tag.pictures();
+    if pictures.is_empty() {
+        return;
+    }
+
+    let pic = pictures
+        .iter()
+        .find(|p| p.pic_type() == PictureType::CoverFront)
+        .or_else(|| pictures.first());
+
+    if let Some(pic) = pic {
+        let ext = pic
+            .mime_type()
+            .and_then(|m| m.ext())
+            .unwrap_or("jpg");
+        let dest = covers_dir.join(format!("{}.{}", album_key, ext));
+        if !dest.exists() {
+            if let Err(e) = std::fs::write(&dest, pic.data()) {
+                log::warn!("Scanner: failed to write cover art for {}: {}", album_key, e);
+            } else {
+                log::info!("Scanner: saved cover art → {}", dest.display());
+            }
+        }
+    }
+}
+
 fn collect_track_infos(
     paths: &[String],
+    covers_dir: &Path,
 ) -> Result<Vec<TrackInfo>, Box<dyn std::error::Error + Send + Sync>> {
+    let _ = std::fs::create_dir_all(covers_dir);
+    let mut seen_covers: HashSet<String> = HashSet::new();
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     for root in paths {
         log::info!("Scanner: walking {}", root);
@@ -291,6 +341,8 @@ fn collect_track_infos(
 
         let album_key = path_id(&format!("{}{}", album_artist, album_name));
         let artist_id = path_id(&album_artist.to_ascii_lowercase());
+
+        extract_cover(&tagged, &album_key, covers_dir, &mut seen_covers);
 
         infos.push(TrackInfo {
             path: path_str,
