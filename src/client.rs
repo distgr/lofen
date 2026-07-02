@@ -1896,7 +1896,7 @@ pub struct Lyrics {
     #[serde(rename = "Lyrics", default)]
     lyrics: Vec<Lyric>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Lyric {
     #[serde(rename = "Text", default)]
     pub text: String,

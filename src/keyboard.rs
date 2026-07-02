@@ -1342,7 +1342,7 @@ impl App {
     }
 
     fn cycle_section(&mut self, forwards: bool) {
-        let has_lyrics = self.lyrics.as_ref().is_some_and(|(_, l, _)| !l.is_empty());
+        let has_lyrics = self.has_visible_lyrics_pane();
 
         match forwards {
             true => match self.state.active_section {
@@ -1401,7 +1401,7 @@ impl App {
     }
 
     fn step_section(&mut self, left: bool) {
-        let has_lyrics = self.lyrics.as_ref().is_some_and(|(_, l, _)| !l.is_empty());
+        let has_lyrics = self.has_visible_lyrics_pane();
 
         let current = self.state.active_section;
 
@@ -1457,6 +1457,29 @@ impl App {
         }
 
         self.state.active_section = next;
+    }
+
+    fn has_visible_lyrics_pane(&self) -> bool {
+        match self.lyrics_visibility {
+            crate::config::LyricsVisibility::Always => true,
+            crate::config::LyricsVisibility::Never => false,
+            crate::config::LyricsVisibility::Auto => {
+                self.lyrics.as_ref().is_some_and(|(_, l, _)| !l.is_empty())
+                    || self
+                        .state
+                        .queue
+                        .get(self.state.current_playback_state.current_index)
+                        .is_some_and(|song| {
+                            self.tracks
+                                .iter()
+                                .chain(self.album_tracks.iter())
+                                .chain(self.playlist_tracks.iter())
+                                .chain(self.search_result_tracks.iter())
+                                .any(|track| track.id == song.id && track.has_lyrics)
+                        })
+                    || matches!(self.state.active_section, ActiveSection::Lyrics)
+            }
+        }
     }
 
     fn select_previous(&mut self) {

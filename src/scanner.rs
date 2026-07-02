@@ -49,6 +49,13 @@ struct TrackInfo {
     year: u64,
     genres: Vec<String>,
     run_time_ticks: u64,
+    has_lyrics: bool,
+}
+
+fn has_embedded_lyrics(tag: Option<&lofty::tag::Tag>) -> bool {
+    tag.and_then(|t| t.get_string(&lofty::tag::ItemKey::Lyrics))
+    .map(|s| !s.trim().is_empty())
+    .unwrap_or(false)
 }
 
 pub async fn scan_paths(
@@ -147,7 +154,7 @@ pub async fn scan_paths(
             "ProductionYear": t.year,
             "RunTimeTicks": t.run_time_ticks,
             "Genres": t.genres,
-            "HasLyrics": false,
+            "HasLyrics": t.has_lyrics,
             "download_status": "Downloaded",
             "file_path": t.path,
             "ServerId": "",
@@ -295,6 +302,7 @@ fn collect_track_infos(
                     year: 0,
                     genres: vec![],
                     run_time_ticks: 0,
+                    has_lyrics: false,
                 });
                 continue;
             }
@@ -338,6 +346,7 @@ fn collect_track_infos(
             .and_then(|t| t.get_string(&lofty::tag::ItemKey::Genre))
             .map(|s| vec![s.to_string()])
             .unwrap_or_default();
+        let has_lyrics = has_embedded_lyrics(tag);
 
         let album_key = path_id(&format!("{}{}", album_artist, album_name));
         let artist_id = path_id(&album_artist.to_ascii_lowercase());
@@ -357,6 +366,7 @@ fn collect_track_infos(
             year,
             genres,
             run_time_ticks,
+            has_lyrics,
         });
     }
 
