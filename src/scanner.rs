@@ -33,7 +33,6 @@ fn read_tag_string(tag: &lofty::tag::Tag, item_key: lofty::tag::ItemKey) -> Stri
 pub struct ScanStats {
     pub scanned: usize,
     pub inserted: usize,
-    pub errors: usize,
 }
 
 struct TrackInfo {
@@ -209,7 +208,7 @@ pub async fn scan_paths(
         errors
     );
 
-    Ok(ScanStats { scanned, inserted, errors })
+    Ok(ScanStats { scanned, inserted })
 }
 
 fn extract_cover(

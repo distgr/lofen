@@ -32,7 +32,6 @@ pub enum Command {
     Remove(RemoveCommand), // remove local files
     Rename(RenameCommand),
     Delete(DeleteCommand), // delete on the jellyfin server
-    CancelDownloads,
     Jellyfin(JellyfinCommand),
     DislikeTrack { track_id: String, disliked: bool },
 }
@@ -390,11 +389,6 @@ pub async fn t_database<'a>(
                                     log::error!("Failed to report progress to jellyfin: {}", e);
                                 }
                             }
-                        }
-                    }
-                    Command::CancelDownloads => {
-                        if let Err(e) = cancel_all_downloads(&pool, tx.clone(), &cancel_tx).await {
-                            let _ = tx.send(Status::Error { error: e.to_string() }).await;
                         }
                     }
                     Command::DislikeTrack { track_id, disliked } => {
@@ -1435,35 +1429,6 @@ async fn track_download_and_update(
         }
 
         tx_db.commit().await?;
-    }
-
-    Ok(())
-}
-
-async fn cancel_all_downloads(
-    pool: &SqlitePool,
-    tx: Sender<Status>,
-    cancel_tx: &broadcast::Sender<Vec<String>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut tx_db = pool.begin().await?;
-    let rows = sqlx::query_as::<_, (String,)>(
-        "UPDATE tracks SET download_status = 'NotDownloaded'
-     WHERE download_status = 'Queued' OR download_status = 'Downloading'
-     RETURNING id",
-    )
-    .fetch_all(&mut *tx_db)
-    .await?;
-
-    let affected_ids: Vec<String> = rows.into_iter().map(|row| row.0).collect();
-
-    tx_db.commit().await?;
-
-    // send a cancel signal to all downloads
-    let _ = cancel_tx.send(affected_ids.clone()).unwrap_or_default();
-    let _ = tx.send(Status::AllDownloaded).await;
-
-    for id in affected_ids {
-        let _ = tx.send(Status::TrackDeleted { id }).await;
     }
 
     Ok(())

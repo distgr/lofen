@@ -1,4 +1,3 @@
-use crate::themes::dialoguer::DialogTheme;
 use dirs::{config_dir, data_dir};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -136,17 +135,4 @@ pub fn save_music_paths(paths: &[String]) -> Result<(), Box<dyn std::error::Erro
         .open(&config_file)?;
     file.write_all(yaml_str.as_bytes())?;
     Ok(())
-}
-
-pub fn select_music_folder_interactive() -> Option<String> {
-    let input = dialoguer::Input::<String>::with_theme(&DialogTheme::default())
-        .with_prompt("Music folder path")
-        .interact_text()
-        .ok()?;
-    let trimmed = input.trim().to_string();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
 }
