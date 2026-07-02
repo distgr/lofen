@@ -83,3 +83,16 @@ assets = [
     ["README.md", "usr/share/doc/lofen/README.md", "644"],
     ["LICENSE", "usr/share/doc/lofen/LICENSE", "644"],
 ]
+
+[package.metadata.generate-rpm]
+summary = "Modern feature-packed terminal music player"
+release = "1"
+license = "GPL-3.0-only"
+assets = [
+    { source = "target/release/lofen", dest = "/usr/bin/lofen", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/lofen/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/lofen/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+libmpv = "*"
